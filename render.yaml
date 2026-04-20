@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: alurb-bot
+    env: python
+    region: singapore  # Choose closest to your users
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn keep_alive:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120 & python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.9.0
+    autoDeploy: true
+    healthCheckPath: /health
+    plan: free
