@@ -1,10 +1,10 @@
-services:
+sservices:
   - type: web
-    name: alurb-bot
+    name: alurb-ai
     env: python
-    region: singapore  # Choose closest to your users
+    region: singapore
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn keep_alive:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120 & python bot.py
+    startCommand: python keep_alive.py & python bot.py
     envVars:
       - key: BOT_TOKEN
         sync: false
