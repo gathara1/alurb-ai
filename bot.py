@@ -46,6 +46,10 @@ GROUP_IDS = set()
 TRIAL_USERS = {}
 TRIAL_HOURS = 2
 
+# User Activity Tracking
+USER_ACTIVITY = {}
+USER_INTERACTIONS = {}
+
 # Premium Plans
 PREMIUM_PLANS = {
     "daily": {"name": "Daily", "days": 1, "price": "$0.99"},
@@ -53,6 +57,148 @@ PREMIUM_PLANS = {
     "monthly": {"name": "Monthly", "days": 30, "price": "$7.99"},
     "lifetime": {"name": "Lifetime", "days": 36500, "price": "$49.99"}
 }
+
+# ==================== USER ACTIVITY TRACKING ====================
+
+def track_user_activity(user_id, username=None, command=None):
+    """Track when users interact with the bot"""
+    user_id = str(user_id)
+    current_time = datetime.now()
+    current_time_iso = current_time.isoformat()
+    
+    global USER_ACTIVITY, USER_INTERACTIONS
+    
+    if user_id not in USER_ACTIVITY:
+        USER_ACTIVITY[user_id] = {
+            "first_seen": current_time_iso,
+            "last_seen": current_time_iso,
+            "username": username or "Unknown",
+            "interaction_count": 1,
+            "first_seen_date": current_time.strftime("%Y-%m-%d"),
+            "first_seen_month": current_time.strftime("%Y-%m")
+        }
+    else:
+        USER_ACTIVITY[user_id]["last_seen"] = current_time_iso
+        USER_ACTIVITY[user_id]["interaction_count"] = USER_ACTIVITY[user_id].get("interaction_count", 0) + 1
+        if username:
+            USER_ACTIVITY[user_id]["username"] = username
+    
+    if command:
+        if user_id not in USER_INTERACTIONS:
+            USER_INTERACTIONS[user_id] = {"commands": {}}
+        if command not in USER_INTERACTIONS[user_id]["commands"]:
+            USER_INTERACTIONS[user_id]["commands"][command] = 0
+        USER_INTERACTIONS[user_id]["commands"][command] += 1
+    
+    if USER_ACTIVITY[user_id]["interaction_count"] % 10 == 0:
+        save_activity_data()
+
+def save_activity_data():
+    """Save user activity data to JSON files"""
+    try:
+        with open(f"{DATA_DIR}/user_activity.json", "w") as f:
+            json.dump(USER_ACTIVITY, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving user activity: {e}")
+    
+    try:
+        with open(f"{DATA_DIR}/user_interactions.json", "w") as f:
+            json.dump(USER_INTERACTIONS, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving user interactions: {e}")
+
+def load_activity_data():
+    """Load user activity data from JSON files"""
+    global USER_ACTIVITY, USER_INTERACTIONS
+    
+    try:
+        with open(f"{DATA_DIR}/user_activity.json", "r") as f:
+            USER_ACTIVITY = json.load(f)
+        logger.info(f"Loaded activity data for {len(USER_ACTIVITY)} users")
+    except FileNotFoundError:
+        USER_ACTIVITY = {}
+        logger.info("No activity data file found, starting fresh")
+    except Exception as e:
+        USER_ACTIVITY = {}
+        logger.error(f"Error loading activity data: {e}")
+    
+    try:
+        with open(f"{DATA_DIR}/user_interactions.json", "r") as f:
+            USER_INTERACTIONS = json.load(f)
+        logger.info(f"Loaded interaction data for {len(USER_INTERACTIONS)} users")
+    except FileNotFoundError:
+        USER_INTERACTIONS = {}
+        logger.info("No interactions data file found, starting fresh")
+    except Exception as e:
+        USER_INTERACTIONS = {}
+        logger.error(f"Error loading interactions data: {e}")
+
+def get_user_stats():
+    """Calculate user statistics"""
+    total_users = len(USER_ACTIVITY)
+    
+    now = datetime.now()
+    thirty_days_ago = now - timedelta(days=30)
+    seven_days_ago = now - timedelta(days=7)
+    one_day_ago = now - timedelta(days=1)
+    
+    monthly_active = 0
+    weekly_active = 0
+    daily_active = 0
+    new_this_month = 0
+    new_this_week = 0
+    new_today = 0
+    
+    for uid, data in USER_ACTIVITY.items():
+        last_seen = datetime.fromisoformat(data["last_seen"])
+        first_seen = datetime.fromisoformat(data["first_seen"])
+        
+        if last_seen > thirty_days_ago:
+            monthly_active += 1
+        if last_seen > seven_days_ago:
+            weekly_active += 1
+        if last_seen > one_day_ago:
+            daily_active += 1
+        
+        if first_seen > thirty_days_ago:
+            new_this_month += 1
+        if first_seen > seven_days_ago:
+            new_this_week += 1
+        if first_seen > one_day_ago:
+            new_today += 1
+    
+    return {
+        "total_users": total_users,
+        "monthly_active": monthly_active,
+        "weekly_active": weekly_active,
+        "daily_active": daily_active,
+        "new_this_month": new_this_month,
+        "new_this_week": new_this_week,
+        "new_today": new_today
+    }
+
+def get_monthly_breakdown():
+    """Get monthly user statistics"""
+    months = {}
+    
+    for uid, data in USER_ACTIVITY.items():
+        first_seen = datetime.fromisoformat(data["first_seen"])
+        month_key = first_seen.strftime("%Y-%m")
+        
+        if month_key not in months:
+            months[month_key] = {
+                "new_users": 0,
+                "total_interactions": 0,
+                "premium_conversions": 0
+            }
+        
+        months[month_key]["new_users"] += 1
+        months[month_key]["total_interactions"] += data.get("interaction_count", 0)
+        
+        if uid in PREMIUM_USERS:
+            months[month_key]["premium_conversions"] += 1
+    
+    return months
 
 # ==================== DATA MANAGEMENT FUNCTIONS ====================
 
@@ -117,6 +263,8 @@ def load_data():
     except Exception as e:
         TRIAL_USERS = {}
         logger.error(f"Error loading trials: {e}")
+    
+    load_activity_data()
 
 def save_data():
     """Save all data to JSON files"""
@@ -149,6 +297,8 @@ def save_data():
         logger.debug("Trials saved")
     except Exception as e:
         logger.error(f"Error saving trials: {e}")
+    
+    save_activity_data()
 
 # ==================== PERMISSION CHECK FUNCTIONS ====================
 
@@ -281,7 +431,6 @@ def ai_chat(query):
         logger.error("OPENROUTER_API_KEY environment variable not set!")
         return "❌ AI service not configured. Please contact @alurb_devs"
     
-    # Randomly choose creator name - ONLY Nappier or Ruth
     creator_names = ["Nappier", "Ruth"]
     chosen_creator = random.choice(creator_names)
     
@@ -295,7 +444,6 @@ def ai_chat(query):
             "X-Title": "Alurb Telegram Bot"
         }
         
-        # Dynamic system prompt with random creator
         system_prompt = f"""You are Alurb AI, the official assistant for Alurb Telegram Bot. 
 
 Important rules:
@@ -365,7 +513,7 @@ Important rules:
 # Load initial data
 load_data()
 
-# Keep-alive server for Render
+# Keep-alive server for Render/Heroku
 keep_alive()
 
 # ==================== START COMMAND ====================
@@ -376,6 +524,7 @@ def start_command(message):
     first_name = message.from_user.first_name or "User"
     username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "start")
     logger.info(f"Start command from {user_id} (@{username})")
     
     trial_started = False
@@ -443,12 +592,146 @@ def start_command(message):
         save_data()
         logger.info(f"Group added: {message.chat.id}")
 
+# ==================== STATS COMMAND ====================
+
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "stats")
+    
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+    
+    stats = get_user_stats()
+    
+    stats_text = f"""
+📊 <b>BOT USAGE STATISTICS</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+👥 <b>User Activity:</b>
+• Total Users: <b>{stats['total_users']}</b>
+• Daily Active: <b>{stats['daily_active']}</b>
+• Weekly Active: <b>{stats['weekly_active']}</b>
+• Monthly Active: <b>{stats['monthly_active']}</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+📈 <b>New Users:</b>
+• Today: <b>{stats['new_today']}</b>
+• This Week: <b>{stats['new_this_week']}</b>
+• This Month: <b>{stats['new_this_month']}</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+💎 <b>Premium Stats:</b>
+• Premium Users: <b>{len(PREMIUM_USERS)}</b>
+• Active Trials: <b>{len([t for t in TRIAL_USERS if is_trial_active(t)])}</b>
+• Conversion Rate: <b>{round(len(PREMIUM_USERS)/max(stats['total_users'],1)*100, 1)}%</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+📱 <b>Groups:</b>
+• Total Groups: <b>{len(GROUP_IDS)}</b>
+
+━━━━━━━━━━━━━━━━━━━━━━
+© alurb_devs
+    """
+    bot.reply_to(message, stats_text, parse_mode="HTML")
+
+# ==================== MONTHLY COMMAND ====================
+
+@bot.message_handler(commands=['monthly'])
+def monthly_command(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "monthly")
+    
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+    
+    months = get_monthly_breakdown()
+    
+    if not months:
+        bot.reply_to(message, "📊 No monthly data available yet!")
+        return
+    
+    report = "<b>📊 MONTHLY BREAKDOWN REPORT</b>\n\n"
+    
+    for month, data in sorted(months.items(), reverse=True)[:6]:
+        report += f"<b>📅 {month}</b>\n"
+        report += f"• New Users: <b>{data['new_users']}</b>\n"
+        report += f"• Interactions: <b>{data['total_interactions']}</b>\n"
+        report += f"• Premium Conversions: <b>{data['premium_conversions']}</b>\n"
+        
+        if data['new_users'] > 0:
+            conv_rate = round(data['premium_conversions'] / data['new_users'] * 100, 1)
+            report += f"• Conversion Rate: <b>{conv_rate}%</b>\n"
+        report += "\n"
+    
+    report += "━━━━━━━━━━━━━━━━━━━━━━\n"
+    report += "© alurb_devs"
+    
+    bot.reply_to(message, report, parse_mode="HTML")
+
+# ==================== USERS COMMAND ====================
+
+@bot.message_handler(commands=['users'])
+def users_command(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "users")
+    
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only command!")
+        return
+    
+    if not USER_ACTIVITY:
+        bot.reply_to(message, "📊 No user data available yet!")
+        return
+    
+    sorted_users = sorted(USER_ACTIVITY.items(), 
+                         key=lambda x: x[1].get("last_seen", ""), 
+                         reverse=True)[:20]
+    
+    report = "<b>📋 RECENT USERS (Last 20)</b>\n\n"
+    
+    for idx, (uid, data) in enumerate(sorted_users, 1):
+        last_seen = datetime.fromisoformat(data["last_seen"]).strftime("%Y-%m-%d %H:%M")
+        username = data.get("username", "Unknown")
+        interactions = data.get("interaction_count", 0)
+        
+        if uid == MASTER_OWNER_ID:
+            status = "👑"
+        elif uid in OWNERS:
+            status = "👑"
+        elif uid in PREMIUM_USERS:
+            status = "💎"
+        elif is_trial_active(uid):
+            status = "🎁"
+        else:
+            status = "👤"
+        
+        report += f"{idx}. {status} <code>{uid}</code>\n"
+        report += f"   @{username} | {interactions} msgs\n"
+        report += f"   Last: {last_seen}\n\n"
+    
+    report += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+    report += f"📊 Total Users: <b>{len(USER_ACTIVITY)}</b>\n"
+    report += "© alurb_devs"
+    
+    bot.reply_to(message, report, parse_mode="HTML")
+
 # ==================== TRIAL COMMAND ====================
 
 @bot.message_handler(commands=['trial'])
 def trial_command(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "trial")
     logger.info(f"Trial command from {user_id}")
     
     if is_owner(user_id):
@@ -503,7 +786,9 @@ Enjoy! 🚀
 @bot.message_handler(commands=['premium'])
 def premium_command(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "premium")
     logger.info(f"Premium command from {user_id}")
     
     if is_owner(user_id):
@@ -568,6 +853,9 @@ def premium_command(message):
 @bot.message_handler(commands=['status'])
 def status_command(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "status")
     
     uptime = time.time() - BOT_START_TIME
     days = int(uptime // 86400)
@@ -592,6 +880,7 @@ def status_command(message):
         user_status = "🔒 Free"
     
     active_trials = len([t for t in TRIAL_USERS if is_trial_active(t)])
+    stats = get_user_stats()
     
     bot.reply_to(message, f"""
 ╔══════════════════════╗
@@ -607,6 +896,12 @@ def status_command(message):
 🎁 Active Trials: {active_trials}
 📱 Groups: {len(GROUP_IDS)}
 
+👥 <b>Users:</b>
+━━━━━━━━━━━━━━━━━━━━━━
+• Total: {stats['total_users']}
+• Monthly Active: {stats['monthly_active']}
+• Daily Active: {stats['daily_active']}
+
 👤 <b>Your Status:</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 {user_status}
@@ -621,11 +916,14 @@ def status_command(message):
 © alurb_devs
     """, parse_mode="HTML")
 
-# ==================== HELP COMMAND ====================
+# ==================== HELP COMMAND (FIXED HTML) ====================
 
 @bot.message_handler(commands=['help'])
 def help_command(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "help")
     
     if is_master(user_id):
         user_level = "👑 Master Owner"
@@ -644,9 +942,9 @@ def help_command(message):
 ╚══════════════════════╝
 
 𖤊───⪩ <b>FREE COMMANDS</b> ⪨───𖤊
-✦ /start - Welcome message & auto-trial
+✦ /start - Welcome message and auto-trial
 ✦ /help - This menu
-✦ /status - Your status & bot stats
+✦ /status - Your status and bot stats
 ✦ /trial - Start 2-hour free trial
 ✦ /premium - View premium plans
 ✦ /ask - Ask Alurb AI Assistant
@@ -654,9 +952,9 @@ def help_command(message):
 
 𖤊───⪩ <b>PREMIUM COMMANDS</b> ⪨───𖤊
 🔒 Requires Premium/Trial:
-✦ /silencer &lt;num&gt; - Device silencer attack
-✦ /xdelay &lt;ms&gt; - Heavy delay attack
-✦ /crash &lt;num&gt; - System crash attack
+✦ /silencer (number) - Device silencer attack
+✦ /xdelay (ms) - Heavy delay attack
+✦ /crash (number) - System crash attack
 ✦ /cekidgrup - Get current group ID
 """
     
@@ -664,19 +962,22 @@ def help_command(message):
         help_text += """
 𖤊───⪩ <b>OWNER COMMANDS</b> ⪨───𖤊
 👑 Owner Access:
-✦ /addprem &lt;id&gt; [plan] - Add premium user
-✦ /delprem &lt;id&gt; - Remove premium user
+✦ /addprem (id) [plan] - Add premium user
+✦ /delprem (id) - Remove premium user
 ✦ /listprem - List all premium users
 ✦ /listidgrup - List all group IDs
-✦ /pair &lt;token&gt; - Pair bot token
+✦ /pair (token) - Pair bot token
+✦ /stats - View user statistics
+✦ /monthly - Monthly breakdown
+✦ /users - Recent users list
 """
     
     if is_master(user_id):
         help_text += """
 𖤊───⪩ <b>MASTER COMMANDS</b> ⪨───𖤊
 👑 Master Only:
-✦ /addowner &lt;id&gt; - Add new owner
-✦ /delowner &lt;id&gt; - Remove owner
+✦ /addowner (id) - Add new owner
+✦ /delowner (id) - Remove owner
 """
     
     help_text += f"""
@@ -694,7 +995,9 @@ def help_command(message):
 @bot.message_handler(commands=['addowner'])
 def add_owner(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "addowner")
     logger.info(f"Addowner command from {user_id}")
     
     if not is_master(user_id):
@@ -705,7 +1008,7 @@ def add_owner(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /addowner <user_id>")
+            bot.reply_to(message, "❌ Usage: /addowner (user_id)")
             return
         
         target_id = parts[1].strip()
@@ -721,12 +1024,14 @@ def add_owner(message):
             bot.reply_to(message, f"⚠️ User is already an owner!")
     except Exception as e:
         logger.error(f"Addowner error: {e}")
-        bot.reply_to(message, "❌ Usage: /addowner <user_id>")
+        bot.reply_to(message, "❌ Usage: /addowner (user_id)")
 
 @bot.message_handler(commands=['delowner'])
 def del_owner(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "delowner")
     logger.info(f"Delowner command from {user_id}")
     
     if not is_master(user_id):
@@ -737,7 +1042,7 @@ def del_owner(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /delowner <user_id>")
+            bot.reply_to(message, "❌ Usage: /delowner (user_id)")
             return
         
         target_id = parts[1].strip()
@@ -753,14 +1058,16 @@ def del_owner(message):
             bot.reply_to(message, f"❌ User not found in owners list!")
     except Exception as e:
         logger.error(f"Delowner error: {e}")
-        bot.reply_to(message, "❌ Usage: /delowner <user_id>")
+        bot.reply_to(message, "❌ Usage: /delowner (user_id)")
 
 # ==================== OWNER COMMANDS ====================
 
 @bot.message_handler(commands=['addprem'])
 def add_premium(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "addprem")
     logger.info(f"Addprem command from {user_id}")
     
     if not is_owner(user_id):
@@ -771,7 +1078,7 @@ def add_premium(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /addprem <user_id> [plan]\nPlans: daily/weekly/monthly/lifetime")
+            bot.reply_to(message, "❌ Usage: /addprem (user_id) [plan]\nPlans: daily/weekly/monthly/lifetime")
             return
         
         target_id = parts[1].strip()
@@ -809,12 +1116,14 @@ def add_premium(message):
         
     except Exception as e:
         logger.error(f"Addprem error: {e}")
-        bot.reply_to(message, "❌ Usage: /addprem <user_id> [daily/weekly/monthly/lifetime]")
+        bot.reply_to(message, "❌ Usage: /addprem (user_id) [daily/weekly/monthly/lifetime]")
 
 @bot.message_handler(commands=['delprem'])
 def del_premium(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "delprem")
     logger.info(f"Delprem command from {user_id}")
     
     if not is_owner(user_id):
@@ -825,7 +1134,7 @@ def del_premium(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /delprem <user_id>")
+            bot.reply_to(message, "❌ Usage: /delprem (user_id)")
             return
         
         target_id = parts[1].strip()
@@ -839,12 +1148,14 @@ def del_premium(message):
             bot.reply_to(message, f"❌ User <code>{target_id}</code> not found in premium list!", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Delprem error: {e}")
-        bot.reply_to(message, "❌ Usage: /delprem <user_id>")
+        bot.reply_to(message, "❌ Usage: /delprem (user_id)")
 
 @bot.message_handler(commands=['listprem'])
 def list_premium(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "listprem")
     logger.info(f"Listprem command from {user_id}")
     
     if not is_owner(user_id):
@@ -878,7 +1189,9 @@ def list_premium(message):
 @bot.message_handler(commands=['listidgrup'])
 def list_groups(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "listidgrup")
     logger.info(f"Listidgrup command from {user_id}")
     
     if not is_owner(user_id):
@@ -898,7 +1211,9 @@ def list_groups(message):
 @bot.message_handler(commands=['silencer'])
 def silencer_attack(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "silencer")
     logger.info(f"Silencer command from {user_id}")
     
     if not check_premium_access(user_id):
@@ -908,7 +1223,7 @@ def silencer_attack(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /silencer <number>")
+            bot.reply_to(message, "❌ Usage: /silencer (number)")
             return
         
         number = int(parts[1])
@@ -942,7 +1257,9 @@ def silencer_attack(message):
 @bot.message_handler(commands=['crash'])
 def crash_attack(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "crash")
     logger.info(f"Crash command from {user_id}")
     
     if not check_premium_access(user_id):
@@ -952,13 +1269,13 @@ def crash_attack(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /crash <number>")
+            bot.reply_to(message, "❌ Usage: /crash (number)")
             return
         
         number = int(parts[1])
         
-        if number > 10:
-            number = 10
+        if number > 15:
+            number = 15
         elif number < 1:
             number = 1
         
@@ -985,7 +1302,9 @@ def crash_attack(message):
 @bot.message_handler(commands=['xdelay'])
 def xdelay_attack(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "xdelay")
     logger.info(f"XDelay command from {user_id}")
     
     if not check_premium_access(user_id):
@@ -995,7 +1314,7 @@ def xdelay_attack(message):
     try:
         parts = message.text.split(' ')
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /xdelay <milliseconds>")
+            bot.reply_to(message, "❌ Usage: /xdelay (milliseconds)")
             return
         
         delay_time = int(parts[1])
@@ -1019,7 +1338,9 @@ def xdelay_attack(message):
 @bot.message_handler(commands=['cekidgrup'])
 def check_group(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "cekidgrup")
     logger.info(f"Cekidgrup command from {user_id}")
     
     if not check_premium_access(user_id):
@@ -1058,10 +1379,12 @@ def ask_ai(message):
     user_id = str(message.from_user.id)
     username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "ask")
+    
     try:
         parts = message.text.split(' ', 1)
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /ask <your question>\n\nExample: /ask What is AI?")
+            bot.reply_to(message, "❌ Usage: /ask (your question)\n\nExample: /ask What is AI?")
             return
         
         query = parts[1].strip()
@@ -1100,13 +1423,18 @@ def ask_ai(message):
 @bot.message_handler(commands=['clearai'])
 def clear_ai_history(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    track_user_activity(user_id, username, "clearai")
     logger.info(f"ClearAI command from {user_id}")
     bot.reply_to(message, "✅ AI conversation history cleared!")
 
 @bot.message_handler(commands=['pair'])
 def pair_command(message):
     user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
     
+    track_user_activity(user_id, username, "pair")
     logger.info(f"Pair command from {user_id}")
     
     if not is_owner(user_id):
@@ -1116,7 +1444,7 @@ def pair_command(message):
     try:
         parts = message.text.split(' ', 1)
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /pair <bot_token>")
+            bot.reply_to(message, "❌ Usage: /pair (bot_token)")
             return
         
         token = parts[1].strip()
@@ -1124,7 +1452,7 @@ def pair_command(message):
         logger.info(f"Pair command executed by {user_id}")
     except Exception as e:
         logger.error(f"Pair error: {e}")
-        bot.reply_to(message, "❌ Usage: /pair <bot_token>")
+        bot.reply_to(message, "❌ Usage: /pair (bot_token)")
 
 @bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
 def track_groups(message):
@@ -1133,7 +1461,7 @@ def track_groups(message):
         save_data()
         logger.info(f"Auto-saved {len(GROUP_IDS)} groups")
 
-# ==================== MAIN RUNNER (FIXED - NO 409 ERRORS) ====================
+# ==================== MAIN RUNNER ====================
 
 def run_bot():
     """Run bot with polling - single instance"""
@@ -1141,7 +1469,6 @@ def run_bot():
     logger.info("=" * 50)
     logger.info("🧹 Cleaning up existing sessions...")
     
-    # Remove any existing webhook to prevent conflicts
     try:
         bot.remove_webhook()
         time.sleep(1)
@@ -1155,6 +1482,7 @@ def run_bot():
     logger.info(f"🤖 AI: Alurb AI (DeepSeek backend)")
     logger.info(f"👨‍💻 Creators: Nappier & Ruth")
     logger.info(f"📊 Loaded: {len(OWNERS)} owners, {len(PREMIUM_USERS)} premium, {len(TRIAL_USERS)} trials, {len(GROUP_IDS)} groups")
+    logger.info(f"👥 Users Tracked: {len(USER_ACTIVITY)}")
     logger.info("=" * 50)
     
     if len(OWNERS) == 0:
@@ -1182,9 +1510,7 @@ def run_bot():
             error_str = str(e)
             if "409" in error_str or "Conflict" in error_str:
                 logger.critical("⚠️ 409 Conflict - Multiple instances detected!")
-                logger.critical("This usually means another bot instance is running.")
                 logger.critical("Revoke your bot token from @BotFather to force all instances offline.")
-                logger.critical("Get a NEW token and update the BOT_TOKEN environment variable.")
                 time.sleep(30)
             else:
                 logger.error(f"Bot crashed: {e}")
