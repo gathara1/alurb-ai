@@ -1,2 +1,2 @@
-web: gunicorn keep_alive:app --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120
 worker: python bot.py
+web: python keep_alive.py
